@@ -13,3 +13,4 @@ A real-time chat web application using FastAPI, WebSocket, and integration with 
 
 1. Ensure Ollama API server is running on `192.168.1.62:11434`.
 2. Install Python dependencies:
+

@@ -1,0 +1,7 @@
+# AgentsTeam Core Requirements
+aiohttp>=3.9.0
+
+# Development Requirements (optional)
+# pytest>=7.0.0
+# black>=22.0.0
+# flake8>=4.0.0

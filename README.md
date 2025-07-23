@@ -5,21 +5,247 @@ AgentsTeam is an AI-powered development framework that enables intelligent code 
 ## 🚀 Features
 
 - **Intelligent Project Generation**: Create complete, production-ready projects with complex architectures
+- **Interactive AI Shell**: Conversational coding with AI models for real-time development
 - **Multi-Domain Expertise**: Supports web development, computer vision, data analysis, and more
 - **CLI-First Approach**: Optimized for command-line interaction and automation
 - **Real Implementation**: Generates actual working code, not just templates or boilerplate
 - **Agent Collaboration**: Multiple AI agents can work together on complex tasks
+- **Multi-Provider Support**: Works with both local Ollama models and OpenAI cloud models
 
 ## 📁 Project Structure
 
 ```
 AgentsTeam/
 ├── cli/                    # Core CLI interface and shell
+│   ├── core/              # Code generation, model selection, project analysis
+│   ├── clients/           # AI provider clients (Ollama, OpenAI)
+│   └── utils/             # Configuration and logging utilities
 ├── projects/               # Example projects created by AgentsTeam
 │   ├── ollama-web-chat/   # Full-stack chat application
 │   └── yolo-detector/     # Computer vision object detection system
-├── src/                   # Core AgentsTeam source code
+├── requirements.txt       # Core dependencies
+├── setup.py              # Installation configuration
 └── README.md              # This file
+```
+
+## 🛠️ Installation & Setup
+
+### Prerequisites
+- Python 3.8+
+- Git
+
+### Install AgentsTeam CLI
+
+1. **Clone the repository**:
+   ```bash
+   git clone https://github.com/dexmac221/AgentsTeam.git
+   cd AgentsTeam
+   ```
+
+2. **Install dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **Install AgentsTeam CLI**:
+   ```bash
+   pip install -e .
+   ```
+
+4. **Verify installation**:
+   ```bash
+   agentsteam --help
+   ```
+
+### Configure API Keys
+
+Set up your AI provider credentials:
+
+```bash
+# Configure OpenAI (for cloud models)
+agentsteam config --openai-key your_openai_api_key
+
+# Check current configuration
+agentsteam config --show
+```
+
+## 🎮 CLI Usage Guide
+
+AgentsTeam provides multiple ways to interact with AI for code generation:
+
+### 1. Interactive Shell Mode (Recommended)
+
+The interactive shell provides the most powerful and intuitive way to work with AgentsTeam:
+
+```bash
+agentsteam shell
+```
+
+**Shell Features:**
+- **Conversational Coding**: Just describe what you want to build
+- **Context Awareness**: Maintains conversation history and project context
+- **File Operations**: Create, edit, and manage files with AI assistance
+- **Built-in Commands**: Shell commands integrated with AI capabilities
+- **Smart Model Selection**: Automatically chooses the best AI model for each task
+
+**Shell Commands:**
+- Type `help` to see all built-in commands
+- Use `/help` to see all slash commands  
+- Commands are documented in detail in the Complete Commands Reference section below
+
+**Interactive Shell Examples:**
+
+```bash
+# Start the shell
+agentsteam shell
+
+# Natural language project creation
+[AgentsTeam] 🤖 create a FastAPI web service for managing books
+
+# File editing with context
+[AgentsTeam] 🤖 edit main.py to add authentication middleware
+
+# Project assistance  
+[AgentsTeam] 🤖 add unit tests for the book service
+
+# Mixed shell and AI commands
+[AgentsTeam] 🤖 ls
+[AgentsTeam] 🤖 show me the structure of this project
+[AgentsTeam] 🤖 run python -m pytest
+```
+
+### 2. Direct Generation Mode
+
+For quick project generation without interactive mode:
+
+```bash
+# Basic project generation
+agentsteam generate "Simple REST API for blog posts"
+
+# With specific technologies
+agentsteam generate "Tetris game" --tech python,pygame
+
+# Force specific model
+agentsteam generate "Microservices platform" --model openai:gpt-4
+```
+
+**Generation Options:**
+- `--tech`: Specify technologies (comma-separated)
+- `--model`: Force specific model (`ollama:codellama`, `openai:gpt-4`)
+- `--output`: Output directory (default: current directory)
+
+### 3. Model Management
+
+```bash
+# List available models
+agentsteam models
+
+# Example output:
+# 🤖 Available Models:
+# 
+# 🏠 Ollama (Local):
+#   • codellama:7b
+#   • llama2:13b
+#   • mistral:7b
+# 
+# ☁️ OpenAI (Cloud):
+#   • gpt-4o
+#   • gpt-4o-mini  
+#   • gpt-3.5-turbo
+```
+
+### 4. Configuration Management
+
+```bash
+# Show current configuration
+agentsteam config --show
+
+# Set OpenAI API key
+agentsteam config --openai-key sk-your-api-key
+
+# Configuration is stored in ~/.agentsteam/config.json
+```
+
+## 🎯 Usage Examples
+
+### Web Development
+
+```bash
+# Interactive shell approach
+agentsteam shell
+[AgentsTeam] 🤖 create a FastAPI web service with:
+- User authentication (JWT)
+- PostgreSQL database
+- Docker containerization
+- API documentation with Swagger
+- Unit tests with pytest
+
+# Direct generation approach
+agentsteam generate "FastAPI web service with JWT auth and PostgreSQL" \
+  --tech fastapi,postgresql,docker,jwt
+```
+
+### Computer Vision
+
+```bash
+agentsteam shell
+[AgentsTeam] 🤖 build a real-time object detection system using:
+- YOLO v8 for detection
+- OpenCV for camera input
+- WebSocket for live streaming
+- Web interface for monitoring
+```
+
+### Data Analysis
+
+```bash
+agentsteam shell
+[AgentsTeam] 🤖 create a data analysis pipeline for:
+- CSV data processing with pandas
+- Statistical analysis and visualization
+- Machine learning model training
+- Jupyter notebook with results
+```
+
+### CLI Tools
+
+```bash
+agentsteam generate "Command-line task manager" \
+  --tech python,click,sqlite
+```
+
+## 🧠 Intelligent Model Selection
+
+AgentsTeam automatically selects the best AI model based on task complexity:
+
+### Simple Tasks → Local Models (Ollama)
+- Basic CRUD applications
+- Simple scripts and utilities
+- Static websites
+- Basic file operations
+
+### Medium Tasks → Balanced Selection
+- REST APIs with authentication
+- Dashboards and admin interfaces
+- Real-time features
+- Database integrations
+
+### Complex Tasks → Cloud Models (OpenAI)
+- Microservices architectures
+- Machine learning pipelines
+- Complex algorithms
+- Large-scale applications
+
+**Manual Override:**
+```bash
+# Force Ollama for faster, local processing
+/ollama
+
+# Force OpenAI for highest quality
+/openai
+
+# Return to automatic selection
+/auto
 ```
 
 ## 🎯 Example Projects
@@ -34,6 +260,11 @@ AgentsTeam demonstrates its capabilities through real project examples:
 - **CLI agent integration** for automation
 - **Professional async architecture**
 
+```bash
+cd projects/yolo-detector
+python run.py --help
+```
+
 ### 2. Ollama Web Chat
 - **Full-stack chat application** with FastAPI backend
 - **Real-time WebSocket communication**
@@ -41,63 +272,9 @@ AgentsTeam demonstrates its capabilities through real project examples:
 - **Database integration**
 - **Multiple LLM model support**
 
-## 🛠️ Installation & Usage
-
-### Prerequisites
-- Python 3.8+
-- Git
-
-### Quick Start
-
-1. **Clone the repository**:
-   ```bash
-   git clone <repository-url>
-   cd AgentsTeam
-   ```
-
-2. **Explore example projects**:
-   ```bash
-   # Computer vision example
-   cd projects/yolo-detector
-   python run.py --help
-   
-   # Chat application example  
-   cd projects/ollama-web-chat
-   python main.py
-   ```
-
-3. **Use AgentsTeam CLI**:
-   ```bash
-   # Start AgentsTeam shell
-   python cli/shell.py
-   
-   # Create new projects
-   agentsteam create --type computer-vision --name my-detector
-   ```
-
-## 🎮 Usage Examples
-
-### Generate a Complete Web Application
 ```bash
-agentsteam create \
-  --type webapp \
-  --features "authentication,database,api" \
-  --name my-app
-```
-
-### Create Computer Vision Pipeline
-```bash
-agentsteam create \
-  --type cv-pipeline \
-  --features "detection,tracking,segmentation" \
-  --camera-source webcam
-```
-
-### Generate CLI Tools
-```bash
-agentsteam create \
-  --type cli-tool \
-  --features "argument-parsing,logging,config"
+cd projects/ollama-web-chat
+python main.py
 ```
 
 ## 🏗️ Architecture
@@ -110,81 +287,156 @@ AgentsTeam uses a multi-agent architecture where different AI agents specialize 
 - **Testing**: Generating test suites and validation
 - **Integration**: Connecting components and services
 
-## 🤖 AI Agent Integration
+## 📋 Complete Commands Reference
 
-AgentsTeam is designed to work seamlessly with AI agents and automation:
+### Built-in Shell Commands
 
-### CLI Agent Commands
+| Command | Description | Usage Example |
+|---------|-------------|---------------|
+| `help` | Show available commands | `help` |
+| `models` | List available AI models | `models` |
+| `config` | Show/set configuration | `config` |
+| `clear` | Clear chat history | `clear` |
+| `cd <dir>` | Change directory | `cd projects/` |
+| `ls` | List files in current directory | `ls` |
+| `cat <file>` | Show file content | `cat main.py` |
+| `project <name>` | Set current project name | `project my-webapp` |
+| `create <file>` | Create file with AI assistance | `create app.py` |
+| `edit <file>` | Edit file with AI assistance | `edit main.py` |
+| `run <command>` | Execute shell command | `run python test.py` |
+| `exit` | Exit the shell | `exit` |
+
+### Slash Commands (Quick Actions)
+
+#### Model Management
+| Command | Description | Usage Example |
+|---------|-------------|---------------|
+| `/help` | Show slash commands help | `/help` |
+| `/model` | Show current model info | `/model` |
+| `/models` | List all available models | `/models` |
+| `/switch` | Switch AI provider | `/switch openai` |
+| `/ollama` | Force use Ollama models | `/ollama` |
+| `/openai` | Force use OpenAI models | `/openai` |
+| `/auto` | Use automatic model selection | `/auto` |
+| `/select` | Select specific model | `/select gpt-4` |
+| `/status` | Show system status | `/status` |
+| `/server` | Set Ollama server URL | `/server http://localhost:11434` |
+| `/local` | Use local Ollama instance | `/local` |
+
+#### File Operations
+| Command | Description | Usage Example |
+|---------|-------------|---------------|
+| `/read <file>` | Read and analyze file | `/read main.py` |
+| `/tree` | Show project file tree | `/tree` |
+| `/find <pattern>` | Find text in files | `/find "function main"` |
+
+#### Code Analysis & Assistance
+| Command | Description | Usage Example |
+|---------|-------------|---------------|
+| `/analyze` | Analyze current code | `/analyze` |
+| `/debug <file>` | Debug code issues | `/debug app.py` |
+| `/fix <file>` | Fix code problems | `/fix main.py` |
+| `/refactor <file>` | Refactor code | `/refactor utils.py` |
+| `/explain <file>` | Explain code functionality | `/explain algorithm.py` |
+
+#### Project Operations
+| Command | Description | Usage Example |
+|---------|-------------|---------------|
+| `/project` | Analyze entire project | `/project` |
+| `/context` | Show current context | `/context` |
+| `/summary` | Generate project summary | `/summary` |
+| `/check` | Check project health | `/check` |
+
+#### Development Tools
+| Command | Description | Usage Example |
+|---------|-------------|---------------|
+| `/test` | Run project tests | `/test` |
+| `/install` | Install dependencies | `/install` |
+| `/git` | Git operations | `/git status` |
+| `/clear` | Clear chat history | `/clear` |
+
+### Natural Language Commands
+
+Beyond specific commands, you can use natural language for any development task:
+
+#### Project Creation
 ```bash
-# Project status and health checks
-agentsteam status --format json
-
-# Generate project reports
-agentsteam analyze --project-path ./my-project
-
-# Automated code improvements
-agentsteam optimize --target performance
-
-# Documentation generation
-agentsteam docs --format markdown
+[AgentsTeam] 🤖 create a FastAPI web service for managing books
+[AgentsTeam] 🤖 build a machine learning pipeline for image classification
+[AgentsTeam] 🤖 make a CLI tool for file organization
 ```
 
-### API Integration
-```python
-from agentsteam import AgentsTeamClient
-
-client = AgentsTeamClient()
-project = client.create_project(
-    type="webapp",
-    features=["auth", "database"],
-    name="my-project"
-)
+#### Code Modification
+```bash
+[AgentsTeam] 🤖 add authentication to this web app
+[AgentsTeam] 🤖 optimize the database queries in models.py
+[AgentsTeam] 🤖 add error handling to the main function
 ```
 
-## 📊 Capabilities
+#### Analysis and Debugging
+```bash
+[AgentsTeam] 🤖 what's wrong with this code?
+[AgentsTeam] 🤖 explain how this algorithm works
+[AgentsTeam] 🤖 suggest improvements for this project
+```
 
-### Code Generation Quality
-- **Professional Architecture**: Follows industry best practices
-- **Real Implementations**: Complete, working code (not templates)
-- **Error Handling**: Comprehensive error management
-- **Performance Optimized**: Async/await patterns, efficient algorithms
-- **Security Conscious**: Input validation, secure defaults
+#### Testing and Quality
+```bash
+[AgentsTeam] 🤖 write unit tests for the user service
+[AgentsTeam] 🤖 add logging to this application
+[AgentsTeam] 🤖 create documentation for the API
+```
 
-### Project Types Supported
-- **Web Applications**: FastAPI, React, Vue.js, full-stack
-- **Computer Vision**: YOLO, OpenCV, tracking, segmentation
-- **Data Analysis**: Pandas, NumPy, visualization, ML pipelines
-- **CLI Tools**: Argument parsing, configuration, logging
-- **API Services**: REST APIs, WebSocket servers, microservices
+## 🤖 AI Provider Support
+
+### Local Models (Ollama)
+- **Fast response times** for simple tasks
+- **Privacy-focused** - code never leaves your machine
+- **No API costs** - unlimited usage
+- **Offline capable** - works without internet
+
+**Supported Models:**
+- CodeLlama (7B, 13B, 34B)
+- Llama 2 (7B, 13B, 70B)
+- Mistral (7B)
+- And more...
+
+### Cloud Models (OpenAI)
+- **Highest quality** code generation
+- **Complex reasoning** capabilities
+- **Latest AI technology**
+- **Reliable uptime**
+
+**Supported Models:**
+- GPT-4o (latest, most capable)
+- GPT-4o-mini (fast, cost-effective)
+- GPT-3.5-turbo (balanced performance)
 
 ## 🔧 Configuration
 
-AgentsTeam can be configured through:
-
 ### Environment Variables
 ```bash
-export AGENTSTEAM_MODEL="gpt-4"
-export AGENTSTEAM_OUTPUT_FORMAT="structured"
-export AGENTSTEAM_VERBOSE=true
+export AGENTSTEAM_OPENAI_KEY="your-api-key"
+export AGENTSTEAM_OLLAMA_URL="http://localhost:11434"
+export AGENTSTEAM_LOG_LEVEL="INFO"
 ```
 
 ### Configuration File
-```yaml
-# agentsteam.yaml
-model:
-  provider: "openai"
-  name: "gpt-4"
-  temperature: 0.1
+Location: `~/.agentsteam/config.json`
 
-output:
-  format: "structured"
-  include_docs: true
-  include_tests: true
-
-features:
-  web_interface: true
-  cli_agent: true
-  monitoring: true
+```json
+{
+  "openai": {
+    "api_key": "your-api-key"
+  },
+  "ollama": {
+    "base_url": "http://localhost:11434"
+  },
+  "preferences": {
+    "default_provider": "auto",
+    "log_level": "INFO"
+  }
+}
 ```
 
 ## 🧪 Testing
@@ -210,6 +462,30 @@ AgentsTeam is optimized for:
 - **Scalability**: Handles large, complex projects
 - **Reliability**: Robust error handling and recovery
 
+## 🚀 Advanced Usage
+
+### Batch Processing
+```bash
+# Generate multiple projects from a file
+cat project_ideas.txt | xargs -I {} agentsteam generate "{}"
+```
+
+### Integration with IDEs
+```bash
+# VS Code integration
+code --install-extension agentsteam.vscode-extension
+
+# Vim integration
+echo "nnoremap <leader>ag :!agentsteam shell<CR>" >> ~/.vimrc
+```
+
+### CI/CD Integration
+```bash
+# Generate and test projects in CI
+agentsteam generate "$PROJECT_DESCRIPTION" --output ./generated
+cd generated && python -m pytest
+```
+
 ## 🤝 Contributing
 
 We welcome contributions! Please see our contributing guidelines:
@@ -222,17 +498,17 @@ We welcome contributions! Please see our contributing guidelines:
 
 ### Development Setup
 ```bash
-# Install dependencies
-pip install -r requirements-dev.txt
+# Install development dependencies
+pip install -e ".[dev]"
 
 # Run tests
 python -m pytest
 
 # Format code
-black src/ cli/ projects/
+black cli/ tests/
 
 # Lint code
-flake8 src/ cli/ projects/
+flake8 cli/ tests/
 ```
 
 ## 📄 License
@@ -255,3 +531,43 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ---
 
 **AgentsTeam** - Intelligent AI-powered development framework for the future of software creation.
+
+## 📚 Quick Reference
+
+### Essential Commands
+```bash
+# Start interactive shell (recommended)
+agentsteam shell
+
+# Quick project generation
+agentsteam generate "your project description"
+
+# List available models
+agentsteam models
+
+# Configure API keys
+agentsteam config --openai-key your-key
+
+# Show current configuration
+agentsteam config --show
+```
+
+### Shell Quick Tips
+- Type naturally: "create a web server"
+- Use `/model` to see current AI model
+- Use `/switch` to change providers
+- Use `help` for all commands
+- Files are created in current directory
+- Use `project myapp` to set project context
+
+### Getting Started in 30 Seconds
+```bash
+git clone https://github.com/dexmac221/AgentsTeam.git
+cd AgentsTeam
+pip install -e .
+agentsteam config --openai-key your-key
+agentsteam shell
+# Type: "create a simple FastAPI hello world app"
+```
+
+**Happy coding with AI! 🚀**
