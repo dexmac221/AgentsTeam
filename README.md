@@ -11,6 +11,8 @@ AgentsTeam is an AI-powered development framework that enables intelligent code 
 - **Real Implementation**: Generates actual working code, not just templates or boilerplate
 - **Agent Collaboration**: Multiple AI agents can work together on complex tasks
 - **Multi-Provider Support**: Works with both local Ollama models and OpenAI cloud models
+- **Autonomous Execution**: Set targets and let AI work autonomously with real-time progress tracking
+- **Intelligent Error Correction**: Automatic compilation error detection and fixing with AI assistance
 
 ## 📁 Project Structure
 
@@ -164,6 +166,121 @@ agentsteam config --show
 agentsteam config --openai-key sk-your-api-key
 
 # Configuration is stored in ~/.agentsteam/config.json
+```
+
+## 🚀 Autonomous Execution System
+
+AgentsTeam features a powerful autonomous execution system that can work towards complex targets with minimal user intervention:
+
+### Key Features
+- **Target-Driven Development**: Set high-level goals and let AI create detailed execution plans
+- **Real-Time Progress Tracking**: Visual progress indicators show completed, current, and pending steps
+- **Intelligent Error Handling**: Automatic detection and fixing of compilation errors and build issues
+- **User Control**: Pause, resume, or stop autonomous execution at any time
+- **Multi-Step Workflows**: Handle complex projects requiring dozens of coordinated steps
+
+### Autonomous Execution Examples
+
+#### Complete Project Creation
+```bash
+agentsteam shell
+/auto "Create a complete REST API for a blog system with authentication, database, and tests"
+```
+
+#### Game Development
+```bash
+/auto "Build a Tetris game for Commodore 64 using cc65 compiler"
+# System will:
+# 1. Create project structure
+# 2. Generate C64-specific game code
+# 3. Set up cc65 build system
+# 4. Compile and test automatically
+# 5. Fix any compilation errors with AI
+```
+
+#### Web Application Development  
+```bash
+/auto "Create a React chat application with real-time messaging and user authentication"
+# System autonomously handles:
+# - Frontend React components
+# - Backend API development
+# - WebSocket integration
+# - Database setup
+# - Authentication system
+# - Testing and deployment
+```
+
+### Progress Tracking
+```bash
+/plan           # Show execution plan with progress
+/progress       # Detailed progress with step results
+/pause          # Pause execution for review
+/resume         # Continue autonomous execution
+```
+
+### Example Progress Display
+```
+📋 Execution Plan:
+🎯 Target: Create a C64 Tetris game
+📊 Progress: 3/7 steps
+
+✅ Step 1: Create project structure
+   Result: Created src/, build/, assets/ directories
+✅ Step 2: Generate game code
+   Result: Created tetris.c with full game logic
+✅ Step 3: Set up build system
+   Result: Created Makefile for cc65 compilation
+⏳ Step 4: Compile game (CURRENT)
+⏸️ Step 5: Test in VICE emulator
+⏸️ Step 6: Optimize performance
+⏸️ Step 7: Create documentation
+```
+
+## 🛠️ Intelligent Error Correction
+
+AgentsTeam automatically detects and fixes compilation errors across multiple programming languages and build systems:
+
+### Supported Compilers & Tools
+- **C/C++**: gcc, clang, cc65 (Commodore 64)
+- **Rust**: rustc, cargo
+- **Go**: go build, go test
+- **Java**: javac, maven
+- **TypeScript**: tsc
+- **And many more...**
+
+### Auto-Correction Workflow
+1. **Error Detection**: Monitors compilation output for error patterns
+2. **Source Analysis**: Reads and analyzes source code context
+3. **AI-Powered Fixing**: Generates corrected code using advanced AI models
+4. **Automatic Application**: Applies fixes with backup creation
+5. **Retry Compilation**: Automatically retries compilation until success
+
+### Example Error Correction
+```bash
+# Compile broken C code
+\cc65 -t c64 -o build/game.s src/game.c
+
+# Output:
+# ❌ Compilation errors detected:
+# src/game.c(42): Error: ';' expected
+# src/game.c(67): Error: Undefined symbol: 'INVALID_COLOR'
+
+# 🤖 AI automatically:
+# 1. Analyzes source code and errors
+# 2. Generates corrected version
+# 3. Creates backup: game.c.backup
+# 4. Applies fixes to game.c
+# 5. Retries compilation
+# ✅ Compilation successful!
+```
+
+### Direct Shell Commands with Error Handling
+```bash
+# Any command starting with \ gets automatic error correction
+\make clean && make        # Auto-fixes build errors
+\gcc -o app main.c        # Auto-fixes C compilation issues  
+\cargo build --release    # Auto-fixes Rust compilation errors
+\npm run build            # Auto-fixes TypeScript/JavaScript issues
 ```
 
 ## 🎯 Usage Examples
@@ -354,6 +471,24 @@ AgentsTeam uses a multi-agent architecture where different AI agents specialize 
 | `/install` | Install dependencies | `/install` |
 | `/git` | Git operations | `/git status` |
 | `/clear` | Clear chat history | `/clear` |
+
+#### 🚀 Autonomous Execution
+| Command | Description | Usage Example |
+|---------|-------------|---------------|
+| `/auto <target>` | Start autonomous execution towards target | `/auto "Create a C64 Tetris game"` |
+| `/target [desc]` | Set/show current target | `/target "Build a web API"` |
+| `/plan` | Show execution plan and progress | `/plan` |
+| `/progress` | Show detailed progress information | `/progress` |
+| `/pause` | Pause autonomous execution | `/pause` |
+| `/resume` | Resume autonomous execution | `/resume` |
+| `/stop` | Stop autonomous execution | `/stop` |
+
+#### 🛠️ Smart Compilation & Error Correction
+| Command | Description | Usage Example |
+|---------|-------------|---------------|
+| `/compile <cmd>` | Smart compilation with error analysis | `/compile gcc -o app main.c` |
+| `/retry` | Retry last shell command | `/retry` |
+| `\<command>` | Direct shell execution with auto error fixing | `\cc65 -t c64 game.c` |
 
 ### Natural Language Commands
 

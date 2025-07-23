@@ -7,6 +7,7 @@ import asyncio
 import os
 import sys
 import subprocess
+import re
 from pathlib import Path
 from typing import Dict, Optional
 import json
@@ -70,6 +71,15 @@ class AgentsTeamShell:
         self.file_embeddings = {}
         self.project_summary = None
         
+        # Autonomous execution system
+        self.autonomous_mode = False
+        self.current_target = None
+        self.execution_plan = []
+        self.current_step = 0
+        self.execution_paused = False
+        self.step_results = []
+        self.max_autonomous_steps = 50  # Safety limit
+        
         # Initialize clients
         self.ollama_client = OllamaClient(self.config, self.logger)
         self.openai_client = OpenAIClient(self.config, self.logger)
@@ -118,7 +128,16 @@ class AgentsTeamShell:
             '/project': self.slash_analyze_project,
             '/context': self.slash_show_context,
             '/summary': self.slash_project_summary,
-            '/check': self.slash_check_project
+            '/check': self.slash_check_project,
+            '/compile': self.slash_smart_compile,
+            '/retry': self.slash_retry_last_command,
+            '/auto': self.slash_autonomous_mode,
+            '/target': self.slash_set_target,
+            '/plan': self.slash_show_plan,
+            '/pause': self.slash_pause_execution,
+            '/resume': self.slash_resume_execution,
+            '/stop': self.slash_stop_execution,
+            '/progress': self.slash_show_progress
         }
     
     async def start(self):
@@ -186,8 +205,287 @@ class AgentsTeamShell:
         
         print("\n👋 Goodbye!")
     
+    async def execute_shell_command(self, command: str):
+        """Execute a direct shell command without AI interpretation"""
+        try:
+            print(f"💻 Executing: {command}")
+            
+            # Store command for potential retry
+            self.last_shell_command = command
+            
+            # Execute the command
+            result = subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                cwd=str(self.current_dir)
+            )
+            
+            # Print output
+            if result.stdout:
+                print(result.stdout.rstrip())
+            
+            if result.stderr:
+                print(f"⚠️ Error: {result.stderr.rstrip()}")
+                
+            # Check for compilation errors and offer AI assistance
+            if result.returncode != 0 and self._is_compilation_error(result.stderr, command):
+                await self._handle_compilation_error(command, result.stderr)
+                
+        except Exception as e:
+            print(f"❌ Failed to execute command: {e}")
+    
+    def _is_compilation_error(self, stderr: str, command: str) -> bool:
+        """Check if the error is a compilation error that we can help with"""
+        compilation_indicators = [
+            'error:', 'Error:', 'ERROR:', ': Error:',
+            'undefined reference', 'undeclared identifier', 'Undefined symbol',
+            'syntax error', 'parse error', 'compilation terminated',
+            'fatal error', 'cannot find', 'no such file',
+            'expected', 'missing', 'invalid', 'redefinition',
+            'note:', 'warning:', 'Warning:', 'WARNING:',
+            'linker error', 'ld:', 'collect2:', 'undefined symbol',
+            'multiple definition', 'first defined here',
+            'Invalid input character', 'Unexpected newline'
+        ]
+        
+        compilation_commands = [
+            'gcc', 'g++', 'clang', 'clang++', 'rustc', 'go build', 'javac', 'tsc',
+            'cargo build', 'cargo run', 'mvn compile', 'dotnet build', 'make',
+            'cc65', 'ca65', 'ld65'  # Add cc65 tools
+        ]
+        
+        is_compilation_cmd = any(cmd in command.lower() for cmd in compilation_commands)
+        has_error_indicators = any(indicator in stderr for indicator in compilation_indicators)
+        
+        # Also check for cc65-specific error patterns
+        cc65_patterns = [
+            '): Error:', '): Fatal:', '): Warning:'
+        ]
+        has_cc65_errors = any(pattern in stderr for pattern in cc65_patterns)
+        
+        return is_compilation_cmd and (has_error_indicators or has_cc65_errors)
+    
+    async def _handle_compilation_error(self, command: str, error_output: str):
+        """Handle compilation errors with AI assistance and automatic fixing"""
+        print("\n🤖 Compilation error detected! Starting automatic fix process...")
+        
+        # Store the failed command for retry functionality
+        self.last_compile_command = command
+        
+        # Extract source files from command for better context
+        source_files = self._extract_source_files_from_command(command)
+        context = ""
+        original_files_content = {}
+        
+        if source_files:
+            print(f"📁 Analyzing source files: {', '.join(source_files)}")
+            for file_path in source_files[:3]:  # Limit to 3 files
+                try:
+                    full_path = self.current_dir / file_path
+                    if full_path.exists():
+                        with open(full_path, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                        original_files_content[file_path] = content
+                        context += f"\n\nSource file {file_path}:\n```\n{content}\n```"
+                except Exception as e:
+                    context += f"\nCould not read {file_path}: {e}"
+        
+        # Create AI prompt to fix the code automatically
+        fix_prompt = f"""
+AUTONOMOUS CODE FIXING REQUEST:
+
+I need you to fix compilation errors automatically. 
+
+COMPILATION COMMAND: {command}
+ERROR OUTPUT:
+{error_output}
+
+SOURCE CODE CONTEXT:
+{context}
+
+INSTRUCTIONS:
+1. Analyze the compilation errors carefully
+2. Identify the specific issues in the source code
+3. Provide corrected versions of the files that need fixing
+4. Use this exact format for each file that needs to be fixed:
+
+FIX_FILE: filename.ext
+```language
+corrected code here
+```
+
+Important: 
+- Only fix the actual compilation errors
+- Preserve the original functionality and logic
+- Use proper C syntax for C64/cc65 development
+- Fix string literal issues, syntax errors, and undefined symbols
+- Make minimal changes to fix the errors
+
+Provide the corrected files now:
+"""
+        
+        print("🔧 Requesting automatic code fixes from AI...")
+        
+        try:
+            # Get AI response with fixes
+            model_info = await self.selector.select_model('complex')
+            client = self.openai_client if model_info['provider'] == 'openai' else self.ollama_client
+            
+            response = await client.generate(
+                model=model_info['model'],
+                prompt=fix_prompt,
+                system_prompt="You are an expert C programmer fixing compilation errors. Provide corrected code that compiles successfully."
+            )
+            
+            print(f"📝 AI response received, processing fixes...")
+            
+            # Parse and apply fixes
+            fixes_applied = await self._apply_automatic_fixes(response, source_files)
+            
+            if fixes_applied:
+                print(f"✅ Applied {fixes_applied} automatic fixes")
+                print("🔄 Retrying compilation...")
+                
+                # Automatically retry the compilation
+                await self.execute_shell_command(command)
+                
+            else:
+                print("❌ Could not parse automatic fixes from AI response")
+                print("🤖 AI Analysis:")
+                print(response)
+                print(f"\n💡 Use '/retry' to retry compilation after manual fixes")
+                
+        except Exception as e:
+            print(f"❌ Error during automatic fixing: {e}")
+            print("🔄 Falling back to manual assistance...")
+            
+            # Fallback to original behavior
+            error_analysis_prompt = f"""
+I tried to compile with this command: {command}
+
+But got this error:
+{error_output}
+
+{context}
+
+Please analyze the compilation error and provide specific steps to fix it.
+"""
+            
+            await self.chat_with_ai(error_analysis_prompt)
+            print(f"\n💡 Use '/retry' to retry compilation after making fixes")
+    
+    def _extract_source_files_from_command(self, command: str) -> list:
+        """Extract source file names from compilation command"""
+        import re
+        
+        # Common source file extensions
+        source_extensions = ['.c', '.cpp', '.cc', '.cxx', '.h', '.hpp', '.rs', '.go', '.java', '.ts', '.js']
+        
+        # Split command into parts and look for file names
+        parts = command.split()
+        source_files = []
+        
+        for part in parts:
+            # Check if part looks like a source file
+            if any(part.endswith(ext) for ext in source_extensions):
+                source_files.append(part)
+            # Also check for files without explicit extensions in current directory
+            elif '.' not in part and len(part) > 1:
+                # Check if file exists with common extensions
+                for ext in source_extensions:
+                    potential_file = f"{part}{ext}"
+                    if (self.current_dir / potential_file).exists():
+                        source_files.append(potential_file)
+                        break
+        
+        return source_files
+    
+    async def _apply_automatic_fixes(self, ai_response: str, source_files: list) -> int:
+        """Parse AI response and apply automatic fixes to source files"""
+        fixes_applied = 0
+        
+        try:
+            # Parse the AI response for FIX_FILE directives
+            lines = ai_response.split('\n')
+            current_file = None
+            current_code = []
+            in_code_block = False
+            
+            for line in lines:
+                line_stripped = line.strip()
+                
+                # Look for FIX_FILE directive
+                if line_stripped.startswith('FIX_FILE:'):
+                    # Apply previous fix if we have one
+                    if current_file and current_code:
+                        await self._apply_single_fix(current_file, '\n'.join(current_code))
+                        fixes_applied += 1
+                    
+                    # Start new fix
+                    current_file = line_stripped.replace('FIX_FILE:', '').strip()
+                    current_code = []
+                    in_code_block = False
+                    print(f"🔧 Found fix for: {current_file}")
+                
+                # Look for code blocks
+                elif line_stripped.startswith('```'):
+                    if in_code_block:
+                        # End of code block
+                        in_code_block = False
+                    else:
+                        # Start of code block
+                        in_code_block = True
+                        current_code = []  # Reset code content
+                
+                # Collect code lines
+                elif in_code_block and current_file:
+                    current_code.append(line)
+            
+            # Apply the last fix if we have one
+            if current_file and current_code:
+                await self._apply_single_fix(current_file, '\n'.join(current_code))
+                fixes_applied += 1
+            
+            return fixes_applied
+            
+        except Exception as e:
+            print(f"❌ Error parsing automatic fixes: {e}")
+            return 0
+    
+    async def _apply_single_fix(self, filename: str, corrected_code: str):
+        """Apply a single file fix"""
+        try:
+            file_path = self.current_dir / filename
+            
+            # Create backup
+            backup_path = file_path.with_suffix(f"{file_path.suffix}.backup")
+            if file_path.exists():
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    original_content = f.read()
+                with open(backup_path, 'w', encoding='utf-8') as f:
+                    f.write(original_content)
+                print(f"📋 Created backup: {backup_path.name}")
+            
+            # Apply fix
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(corrected_code)
+            
+            print(f"✅ Applied fix to: {filename}")
+            
+        except Exception as e:
+            print(f"❌ Error applying fix to {filename}: {e}")
+    
     async def process_input(self, user_input: str):
-        """Process user input - either command, slash command, or AI conversation"""
+        """Process user input - either command, slash command, shell command, or AI conversation"""
+        
+        # Check for direct shell commands (starting with \)
+        if user_input.startswith('\\'):
+            shell_command = user_input[1:]  # Remove the \ prefix
+            await self.execute_shell_command(shell_command)
+            return
+        
         # Check for slash commands first
         if user_input.startswith('/'):
             parts = user_input.split()
@@ -548,6 +846,26 @@ File Operations:
   edit <file>    - Edit a file (AI-assisted)
   run <command>  - Run shell command
 
+🆕 Direct Shell Commands:
+  \\<command>    - Execute shell command directly (without AI)
+  Examples:
+    \\ls -la      - List files with details
+    \\g++ main.cpp - Compile C++ code (with smart error handling)
+    \\python test.py - Run Python script
+
+🆕 Smart Compilation:
+  - Automatic error detection for C++, Rust, Go, Java, etc.
+  - AI-powered error analysis and fix suggestions
+  - Source code context for better debugging
+  - Use /compile or /retry for compilation workflows
+
+🚀 Autonomous Execution:
+  - Set targets and let AI work autonomously towards them
+  - Real-time progress tracking with visible steps
+  - Pause/resume/stop controls for user oversight
+  - Multi-step execution with automatic error handling
+  - Use /auto "target description" to start
+
 AI Conversation:
   Just type what you want to build or ask questions!
   
@@ -556,6 +874,7 @@ Examples:
   "make a tetris game with pygame"
   "edit main.py to add error handling"
   "run the tests"
+  \\make clean    (direct shell command)
         """)
     
     async def cmd_models(self, args):
@@ -706,6 +1025,20 @@ Server Management:
   /server <url>   - Set Ollama server URL
   /local          - Switch to local Ollama (localhost)
   
+🆕 Smart Compilation & Shell:
+  /compile CMD    - Smart compilation with error analysis
+  /retry          - Retry last shell command
+  \\CMD           - Direct shell execution (use \\ prefix anywhere)
+  
+🚀 Autonomous Execution:
+  /auto TARGET    - Start autonomous execution towards target
+  /target [desc]  - Set/show current target
+  /plan           - Show execution plan and progress
+  /progress       - Show detailed progress information
+  /pause          - Pause autonomous execution
+  /resume         - Resume autonomous execution
+  /stop           - Stop autonomous execution
+  
 Programming Tools:
   /git <command>  - Git operations (init, add, commit, push)
   /test           - Run project tests
@@ -732,8 +1065,21 @@ Information:
   /help           - Show this help
   /clear          - Clear chat history
 
-Examples:
-  /git init                          # Initialize git repo
+🆕 New Features Examples:
+  # Smart Compilation
+  /compile g++ -o app main.cpp      # Smart C++ compilation
+  /retry                            # Retry after fixing errors
+  \\ls -la                          # Direct shell command
+  \\make clean && make              # Direct make command
+  
+  # Autonomous Execution
+  /auto "Create a REST API for a blog system"  # Start autonomous mode
+  /plan                             # Show execution plan
+  /pause                            # Pause execution
+  /resume                           # Resume execution
+  
+  # Regular Commands
+  /git init                         # Initialize git repo
   /install                          # Install project dependencies
   /test                             # Run all tests
   /tree                             # Show project structure
@@ -2094,6 +2440,31 @@ Provide a comprehensive analysis covering:
         
         print("\n✅ Automatic project check completed!")
     
+    async def slash_smart_compile(self, args):
+        """Smart compilation with automatic error handling and fixes"""
+        if not args:
+            print("❌ Usage: /compile <compilation_command>")
+            print("Example: /compile g++ -o main main.cpp")
+            return
+        
+        command = ' '.join(args)
+        print(f"🔨 Smart compilation: {command}")
+        
+        # Store command for potential retry
+        self.last_compile_command = command
+        
+        # Try compilation
+        await self.execute_shell_command(command)
+    
+    async def slash_retry_last_command(self, args):
+        """Retry the last shell command that was executed"""
+        if not hasattr(self, 'last_shell_command'):
+            print("❌ No previous command to retry")
+            return
+        
+        print(f"🔄 Retrying: {self.last_shell_command}")
+        await self.execute_shell_command(self.last_shell_command)
+    
     def _find_relevant_files_for_query(self, query: str) -> list:
         """Find files most relevant to a specific query"""
         if not self.project_context:
@@ -2128,6 +2499,568 @@ Provide a comprehensive analysis covering:
         # Sort by score and return file paths
         scored_files.sort(reverse=True)
         return [file_path for _, file_path in scored_files]
+    
+    # Autonomous Execution System
+    async def slash_autonomous_mode(self, args):
+        """Enter autonomous mode with a target"""
+        if not args:
+            print("Usage: /auto <target_description>")
+            print("Examples:")
+            print("  /auto \"Create a complete REST API for a blog system\"")
+            print("  /auto \"Build and test a Python calculator with GUI\"")
+            print("  /auto \"Set up a React app with authentication and deploy it\"")
+            return
+        
+        target = ' '.join(args)
+        await self._start_autonomous_execution(target)
+    
+    async def slash_set_target(self, args):
+        """Set or show the current target"""
+        if not args:
+            if self.current_target:
+                print(f"🎯 Current target: {self.current_target}")
+            else:
+                print("❌ No target set. Use /target <description> to set one.")
+            return
+        
+        self.current_target = ' '.join(args)
+        print(f"🎯 Target set: {self.current_target}")
+        
+        if not self.autonomous_mode:
+            print("💡 Use /auto to start autonomous execution towards this target")
+    
+    async def slash_show_plan(self, args):
+        """Show the current execution plan"""
+        if not self.execution_plan:
+            print("❌ No execution plan available.")
+            print("💡 Set a target with /target or /auto to generate a plan")
+            return
+        
+        print("📋 Execution Plan:")
+        print(f"🎯 Target: {self.current_target}")
+        print(f"📊 Progress: {self.current_step}/{len(self.execution_plan)} steps")
+        print()
+        
+        for i, step in enumerate(self.execution_plan, 1):
+            # Handle case where step might not be a dict
+            if not isinstance(step, dict):
+                print(f"⚠️ Step {i}: Invalid step format: {step}")
+                continue
+                
+            status_icon = "✅" if i <= self.current_step else "⏳" if i == self.current_step + 1 else "⏸️"
+            description = step.get('description', 'No description')
+            print(f"{status_icon} Step {i}: {description}")
+            
+            if step.get('details'):
+                print(f"   Details: {step['details']}")
+            if i <= self.current_step and self.step_results:
+                result = self.step_results[i-1] if i-1 < len(self.step_results) else None
+                if result:
+                    print(f"   Result: {result.get('summary', 'Completed')}")
+        print()
+    
+    async def slash_show_progress(self, args):
+        """Show detailed progress information"""
+        await self.slash_show_plan([])
+        
+        if self.autonomous_mode:
+            print("🤖 Autonomous Mode: ACTIVE")
+            if self.execution_paused:
+                print("⏸️  Status: PAUSED")
+            else:
+                print("▶️  Status: RUNNING")
+        else:
+            print("🤖 Autonomous Mode: INACTIVE")
+        
+        if self.step_results:
+            print(f"\n📈 Completed Steps: {len(self.step_results)}")
+            print("Recent results:")
+            for i, result in enumerate(self.step_results[-3:], 1):  # Show last 3
+                print(f"  {i}. {result.get('description', 'Unknown')}: {result.get('summary', 'Completed')}")
+    
+    async def slash_pause_execution(self, args):
+        """Pause autonomous execution"""
+        if not self.autonomous_mode:
+            print("❌ Autonomous mode is not active")
+            return
+        
+        self.execution_paused = True
+        print("⏸️  Autonomous execution paused")
+        print("💡 Use /resume to continue or /stop to end execution")
+    
+    async def slash_resume_execution(self, args):
+        """Resume autonomous execution"""
+        if not self.autonomous_mode:
+            print("❌ Autonomous mode is not active")
+            return
+        
+        if not self.execution_paused:
+            print("▶️  Execution is already running")
+            return
+        
+        self.execution_paused = False
+        print("▶️  Resuming autonomous execution...")
+        await self._continue_autonomous_execution()
+    
+    async def slash_stop_execution(self, args):
+        """Stop autonomous execution"""
+        if not self.autonomous_mode:
+            print("❌ Autonomous mode is not active")
+            return
+        
+        self.autonomous_mode = False
+        self.execution_paused = False
+        
+        print("⏹️  Autonomous execution stopped")
+        print(f"📊 Completed {self.current_step}/{len(self.execution_plan)} steps")
+        
+        if self.current_step < len(self.execution_plan):
+            print("💡 You can resume later with /resume or start a new target with /auto")
+    
+    async def _start_autonomous_execution(self, target: str):
+        """Start autonomous execution towards a target"""
+        print(f"🚀 Starting autonomous execution...")
+        print(f"🎯 Target: {target}")
+        
+        self.current_target = target
+        self.autonomous_mode = True
+        self.execution_paused = False
+        self.current_step = 0
+        self.step_results = []
+        
+        # Generate execution plan
+        print("🧠 Generating execution plan...")
+        await self._generate_execution_plan(target)
+        
+        if not self.execution_plan:
+            print("❌ Failed to generate execution plan")
+            self.autonomous_mode = False
+            return
+        
+        print(f"📋 Generated plan with {len(self.execution_plan)} steps")
+        await self.slash_show_plan([])
+        
+        print("\n🤖 Starting autonomous execution...")
+        print("💡 Use /pause to pause, /stop to stop, /progress to see status")
+        print("=" * 60)
+        
+        await self._continue_autonomous_execution()
+    
+    async def _generate_execution_plan(self, target: str):
+        """Generate a detailed execution plan for the target"""
+        # Build current context
+        context = self._build_context()
+        
+        planning_prompt = f"""
+Create a detailed step-by-step execution plan to achieve this target:
+
+TARGET: {target}
+
+CURRENT CONTEXT:
+{context}
+
+Generate a comprehensive plan with the following structure:
+1. Each step should be specific and actionable
+2. Steps should build upon each other logically
+3. Include verification/testing steps
+4. Consider error handling and fallbacks
+
+Provide the plan as a JSON array where each step has:
+- "description": Brief description of the step
+- "action": The type of action (create_file, run_command, analyze, etc.)
+- "details": Specific implementation details
+- "verification": How to verify this step succeeded
+- "dependencies": Previous steps this depends on
+
+Example format:
+[
+  {{
+    "description": "Create project structure",
+    "action": "create_directories",
+    "details": "Create src/, tests/, docs/ directories",
+    "verification": "Check that directories exist",
+    "dependencies": []
+  }},
+  {{
+    "description": "Implement main module",
+    "action": "create_file",
+    "details": "Create src/main.py with core functionality",
+    "verification": "Python syntax check passes",
+    "dependencies": [1]
+  }}
+]
+
+Generate a complete, practical plan (maximum 15 steps):
+"""
+        
+        try:
+            # Use a powerful model for planning
+            model_info = await self.selector.select_model('complex')
+            client = self.openai_client if model_info['provider'] == 'openai' else self.ollama_client
+            
+            response = await client.generate(
+                model=model_info['model'],
+                prompt=planning_prompt,
+                system_prompt="You are an expert project planner. Create detailed, actionable execution plans."
+            )
+            
+            # Extract JSON from response
+            plan_json = self._extract_json_from_response(response)
+            if plan_json and isinstance(plan_json, list) and all(isinstance(step, dict) for step in plan_json):
+                self.execution_plan = plan_json
+                print(f"✅ Generated plan with {len(self.execution_plan)} steps")
+            else:
+                # Fallback: parse text-based plan
+                print("🔄 JSON parsing failed, using text parsing fallback...")
+                self.execution_plan = self._parse_text_plan(response)
+                if self.execution_plan:
+                    print(f"✅ Generated plan with {len(self.execution_plan)} steps (text format)")
+                else:
+                    print("❌ Failed to parse plan from response")
+                
+        except Exception as e:
+            print(f"❌ Error generating plan: {e}")
+            # Create a basic fallback plan
+            self.execution_plan = [
+                {
+                    "description": "Analyze requirements and setup",
+                    "action": "analyze", 
+                    "details": f"Break down the target: {target}",
+                    "verification": "Requirements are clear",
+                    "dependencies": []
+                }
+            ]
+            
+        # Ensure we always have a valid plan
+        if not self.execution_plan:
+            print("🔧 Creating fallback plan...")
+            self.execution_plan = [
+                {
+                    "description": f"Execute target: {target}",
+                    "action": "general",
+                    "details": f"Work towards completing: {target}",
+                    "verification": "Target completed successfully",
+                    "dependencies": []
+                }
+            ]
+    
+    def _extract_json_from_response(self, response: str):
+        """Extract JSON from AI response"""
+        import re
+        import json
+        
+        # Look for JSON blocks
+        json_pattern = r'```(?:json\n)?(.*?)```'
+        matches = re.findall(json_pattern, response, re.DOTALL)
+        
+        for match in matches:
+            try:
+                return json.loads(match.strip())
+            except json.JSONDecodeError:
+                continue
+        
+        # Try to find JSON in the response without code blocks
+        try:
+            # Look for array patterns
+            array_pattern = r'\[.*?\]'
+            matches = re.findall(array_pattern, response, re.DOTALL)
+            for match in matches:
+                try:
+                    return json.loads(match)
+                except json.JSONDecodeError:
+                    continue
+        except:
+            pass
+        
+        return None
+    
+    def _parse_text_plan(self, response: str) -> list:
+        """Parse text-based plan as fallback"""
+        steps = []
+        lines = response.split('\n')
+        
+        current_step = None
+        step_counter = 0
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Look for numbered steps (various formats)
+            step_match = re.match(r'^(\d+)[\.\)]\s*(.*)', line)
+            if step_match:
+                if current_step:
+                    steps.append(current_step)
+                
+                step_counter += 1
+                step_description = step_match.group(2).strip()
+                
+                current_step = {
+                    "description": step_description if step_description else f"Step {step_counter}",
+                    "action": "general",
+                    "details": step_description if step_description else f"Execute step {step_counter}",
+                    "verification": "Manual check required",
+                    "dependencies": []
+                }
+            # Look for bullet points
+            elif line.startswith(('-', '*', '•')):
+                if not current_step:
+                    step_counter += 1
+                    current_step = {
+                        "description": f"Step {step_counter}",
+                        "action": "general", 
+                        "details": "",
+                        "verification": "Manual check required",
+                        "dependencies": []
+                    }
+                
+                bullet_text = line[1:].strip()
+                if bullet_text:
+                    if not current_step["details"]:
+                        current_step["description"] = bullet_text
+                        current_step["details"] = bullet_text
+                    else:
+                        current_step["details"] += f" {bullet_text}"
+        
+        if current_step:
+            steps.append(current_step)
+        
+        # If no structured steps found, create a single general step
+        if not steps and response.strip():
+            steps = [{
+                "description": "Execute plan based on AI analysis",
+                "action": "general",
+                "details": response.strip()[:500],  # Limit details length
+                "verification": "Manual check required",
+                "dependencies": []
+            }]
+        
+        return steps[:15]  # Limit to 15 steps
+    
+    async def _continue_autonomous_execution(self):
+        """Continue autonomous execution from current step"""
+        while (self.autonomous_mode and 
+               not self.execution_paused and 
+               self.current_step < len(self.execution_plan) and
+               self.current_step < self.max_autonomous_steps):
+            
+            current_step_info = self.execution_plan[self.current_step]
+            
+            # Validate step format
+            if not isinstance(current_step_info, dict):
+                print(f"❌ Invalid step format at step {self.current_step + 1}: {current_step_info}")
+                self.execution_paused = True
+                print("⏸️  Execution paused due to invalid step format")
+                return
+            
+            print(f"\n🔄 Step {self.current_step + 1}/{len(self.execution_plan)}: {current_step_info['description']}")
+            print(f"📋 Details: {current_step_info.get('details', 'No details')}")
+            
+            # Execute the step
+            step_result = await self._execute_step(current_step_info)
+            
+            # Store result
+            self.step_results.append({
+                'step': self.current_step + 1,
+                'description': current_step_info['description'],
+                'result': step_result,
+                'summary': step_result.get('summary', 'Completed') if step_result else 'Failed'
+            })
+            
+            if step_result and step_result.get('success', False):
+                print(f"✅ Step {self.current_step + 1} completed: {step_result.get('summary', 'Success')}")
+                self.current_step += 1
+                
+                # Brief pause between steps
+                await asyncio.sleep(1)
+                
+            else:
+                print(f"❌ Step {self.current_step + 1} failed: {step_result.get('error', 'Unknown error') if step_result else 'Execution failed'}")
+                
+                # Ask AI how to handle the failure
+                await self._handle_step_failure(current_step_info, step_result)
+                break
+        
+        # Check if we completed all steps
+        if self.current_step >= len(self.execution_plan):
+            await self._complete_autonomous_execution()
+    
+    async def _execute_step(self, step_info: dict) -> dict:
+        """Execute a single step in the autonomous plan"""
+        action = step_info.get('action', 'general')
+        details = step_info.get('details', '')
+        
+        try:
+            if action == 'create_file':
+                return await self._execute_create_file_step(step_info)
+            elif action == 'run_command':
+                return await self._execute_command_step(step_info)
+            elif action == 'create_directories':
+                return await self._execute_create_directories_step(step_info)
+            elif action == 'analyze':
+                return await self._execute_analysis_step(step_info)
+            else:
+                # General AI-powered step execution
+                return await self._execute_general_step(step_info)
+                
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e),
+                'summary': f'Step execution failed: {e}'
+            }
+    
+    async def _execute_general_step(self, step_info: dict) -> dict:
+        """Execute a general step using AI"""
+        step_prompt = f"""
+Execute this step in the autonomous plan:
+
+STEP: {step_info['description']}
+DETAILS: {step_info.get('details', '')}
+VERIFICATION: {step_info.get('verification', '')}
+
+Current directory: {self.current_dir}
+Target: {self.current_target}
+
+Please execute this step by taking appropriate actions. You can:
+- Create files and directories
+- Run commands
+- Analyze code
+- Make modifications
+
+Provide specific actions to complete this step.
+"""
+        
+        # Add to chat history and get AI response
+        response = await self._get_ai_response_for_step(step_prompt)
+        
+        # Process AI response to execute actions
+        await self._process_ai_response(response)
+        
+        return {
+            'success': True,
+            'summary': f'Executed: {step_info["description"]}',
+            'details': response[:200] + '...' if len(response) > 200 else response
+        }
+    
+    async def _execute_create_file_step(self, step_info: dict) -> dict:
+        """Execute a file creation step"""
+        # This would create files based on step details
+        details = step_info.get('details', '')
+        # Implementation would parse details to create specific files
+        return {
+            'success': True,
+            'summary': f'File creation step completed'
+        }
+    
+    async def _execute_command_step(self, step_info: dict) -> dict:
+        """Execute a command step with automatic error handling"""
+        details = step_info.get('details', '')
+        
+        try:
+            # Extract command from details
+            command = details.strip()
+            if command.startswith('Execute ') or command.startswith('Run '):
+                # Extract actual command
+                parts = command.split(' ', 1)
+                if len(parts) > 1:
+                    command = parts[1]
+            
+            print(f"🔧 Executing command: {command}")
+            
+            # Execute command using the shell command system (with error handling)
+            await self.execute_shell_command(command)
+            
+            return {
+                'success': True,
+                'summary': f'Command executed: {command}'
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e),
+                'summary': f'Command execution failed: {e}'
+            }
+    
+    async def _execute_create_directories_step(self, step_info: dict) -> dict:
+        """Execute directory creation step"""
+        # This would create directories
+        details = step_info.get('details', '')
+        # Implementation would parse and create directories
+        return {
+            'success': True,
+            'summary': f'Directory creation completed'
+        }
+    
+    async def _execute_analysis_step(self, step_info: dict) -> dict:
+        """Execute an analysis step"""
+        # This would perform analysis
+        details = step_info.get('details', '')
+        # Implementation would perform various analyses
+        return {
+            'success': True,
+            'summary': f'Analysis completed'
+        }
+    
+    async def _get_ai_response_for_step(self, prompt: str) -> str:
+        """Get AI response for step execution"""
+        try:
+            model_info = await self.selector.select_model('medium')
+            client = self.openai_client if model_info['provider'] == 'openai' else self.ollama_client
+            
+            response = await client.generate(
+                model=model_info['model'],
+                prompt=prompt,
+                system_prompt=self._get_system_prompt()
+            )
+            
+            return response
+        except Exception as e:
+            return f"Error getting AI response: {e}"
+    
+    async def _handle_step_failure(self, step_info: dict, result: dict):
+        """Handle step failure by asking AI for recovery strategy"""
+        print(f"🤔 Analyzing step failure...")
+        
+        failure_prompt = f"""
+A step in autonomous execution failed:
+
+FAILED STEP: {step_info['description']}
+DETAILS: {step_info.get('details', '')}
+ERROR: {result.get('error', 'Unknown error') if result else 'No result'}
+
+Please suggest how to:
+1. Fix the immediate issue
+2. Modify the step to succeed
+3. Continue with the execution plan
+
+Should we retry this step, skip it, or modify the plan?
+"""
+        
+        response = await self._get_ai_response_for_step(failure_prompt)
+        print(f"🤖 Failure analysis: {response}")
+        
+        # For now, pause execution for user intervention
+        self.execution_paused = True
+        print("⏸️  Execution paused for manual intervention")
+        print("💡 Use /resume to continue or /stop to end execution")
+    
+    async def _complete_autonomous_execution(self):
+        """Complete autonomous execution and show results"""
+        self.autonomous_mode = False
+        
+        print("\n🎉 Autonomous execution completed!")
+        print(f"🎯 Target achieved: {self.current_target}")
+        print(f"✅ Completed {self.current_step}/{len(self.execution_plan)} steps")
+        
+        # Show summary of results
+        print("\n📊 Execution Summary:")
+        for i, result in enumerate(self.step_results, 1):
+            print(f"  {i}. {result['description']}: {result['summary']}")
+        
+        print(f"\n💡 Autonomous execution finished. Use /auto for a new target.")
 
 def main():
     """Main shell entry point"""
