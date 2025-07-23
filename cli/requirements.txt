@@ -1,0 +1,3 @@
+# AgentsTeam CLI Requirements
+aiohttp>=3.9.0
+asyncio

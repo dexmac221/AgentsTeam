@@ -1,0 +1,154 @@
+version: '3.8'
+
+services:
+  # AgentsTeam CLI Service
+  cli:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"  # Optional: for API mode
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - AGENTSTEAM_MODEL=ollama
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./projects:/app/projects    # Generated projects
+      - ./config:/app/config        # Configuration files
+      - /var/run/docker.sock:/var/run/docker.sock  # Docker access for CLI
+    networks:
+      - agentsteam
+    depends_on:
+      - ollama
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+    command: ["agentsteam", "shell"]
+
+  # Ollama Service (Local AI Models)
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    environment:
+      - OLLAMA_ORIGINS=*
+    volumes:
+      - ollama_data:/root/.ollama
+      - ./models:/app/models        # Model storage
+    networks:
+      - agentsteam
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    # Uncomment for GPU support
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # Model Initialization Service
+  model-setup:
+    image: ollama/ollama:latest
+    depends_on:
+      - ollama
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - agentsteam
+    restart: "no"
+    entrypoint: >
+      sh -c "
+      echo 'Waiting for Ollama service...'
+      sleep 10
+      echo 'Pulling qwen2.5-coder:7b model...'
+      ollama pull qwen2.5-coder:7b
+      echo 'Pulling qwen2.5-coder:1.5b model...'
+      ollama pull qwen2.5-coder:1.5b
+      echo 'Models ready!'
+      "
+
+  # Portainer - Docker Container Management
+  portainer:
+    image: portainer/portainer-ce:latest
+    ports:
+      - "9000:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    networks:
+      - agentsteam
+    restart: unless-stopped
+    command: -H unix:///var/run/docker.sock
+
+  # Redis - Optional caching for AI responses
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - agentsteam
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Code Server - Optional web-based IDE
+  code-server:
+    image: codercom/code-server:latest
+    ports:
+      - "8080:8080"
+    environment:
+      - PASSWORD=agentsteam123
+    volumes:
+      - ./projects:/home/coder/projects
+      - code_server_data:/home/coder
+    networks:
+      - agentsteam
+    restart: unless-stopped
+
+networks:
+  agentsteam:
+    driver: bridge
+
+volumes:
+  ollama_data:
+  portainer_data:
+  redis_data:
+  code_server_data:
+
+# Usage Instructions:
+#
+# 1. Start all services:
+#    docker-compose up -d
+#
+# 2. Wait for models to download (first time only):
+#    docker-compose logs -f model-setup
+#
+# 3. Access the CLI:
+#    docker-compose exec cli agentsteam shell
+#
+# 4. Access web interfaces:
+#    - Portainer (Container Management): http://localhost:9000
+#    - Code Server (Web IDE): http://localhost:8080 (password: agentsteam123)
+#
+# 5. Check service health:
+#    docker-compose ps
+#    curl http://localhost:11434/api/tags  # Ollama models
+#
+# 6. Scale CLI instances (if needed):
+#    docker-compose up -d --scale cli=3
+#
+# Environment Variables:
+# - OPENAI_API_KEY: Your OpenAI API key for cloud models
+# - GPU support: Uncomment GPU section in ollama service for NVIDIA GPUs

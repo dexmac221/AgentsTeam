@@ -1,0 +1,151 @@
+body {
+  margin: 0;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  background: #f2f6fc;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  min-height: 100vh;
+  padding: 20px;
+  color: #333;
+}
+
+.chat-container {
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  max-width: 700px;
+  width: 100%;
+  height: 90vh;
+  border-radius: 8px;
+  box-shadow: 0 3px 15px rgb(0 0 0 / 0.2);
+  overflow: hidden;
+}
+
+header {
+  padding: 20px;
+  background: #4a6cf7;
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+header h1 {
+  font-weight: 600;
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+.model-selector {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.model-selector label {
+  font-weight: 600;
+}
+
+.model-selector select {
+  border: none;
+  border-radius: 5px;
+  padding: 5px 10px;
+  font-size: 1rem;
+  background: white;
+  color: #333;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.model-selector select:hover {
+  background-color: #e3e9ff;
+}
+
+.chat-window {
+  flex: 1;
+  padding: 20px;
+  overflow-y: auto;
+  background: #e9efff;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  scroll-behavior: smooth;
+}
+
+.chat-message {
+  max-width: 75%;
+  padding: 10px 15px;
+  border-radius: 18px;
+  font-size: 1rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.user-message {
+  align-self: flex-end;
+  background: #4a6cf7;
+  color: white;
+  border-bottom-right-radius: 3px;
+}
+
+.assistant-message {
+  align-self: flex-start;
+  background: white;
+  border: 1px solid #d4d9ff;
+  color: #222;
+  border-bottom-left-radius: 3px;
+}
+
+.status-message {
+  align-self: center;
+  font-size: 0.85rem;
+  color: #666;
+}
+
+#chatForm {
+  display: flex;
+  padding: 15px 20px;
+  background: #f5f8ff;
+  border-top: 1px solid #d4d9ff;
+}
+
+#chatForm textarea {
+  flex: 1;
+  resize: none;
+  border-radius: 20px;
+  border: 1px solid #c0c7ff;
+  padding: 10px 15px;
+  font-size: 1rem;
+  outline: none;
+  font-family: inherit;
+  transition: border-color 0.2s;
+}
+
+#chatForm textarea:focus {
+  border-color: #4a6cf7;
+}
+
+#sendButton {
+  background: #4a6cf7;
+  color: white;
+  border: none;
+  margin-left: 10px;
+  font-weight: 700;
+  font-size: 1rem;
+  border-radius: 20px;
+  padding: 0 20px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+#sendButton:hover:not(:disabled) {
+  background: #3b58d7;
+}
+
+#sendButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}

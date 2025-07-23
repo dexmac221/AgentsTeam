@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ollama Web Chat</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="chat-container">
+    <header>
+      <h1>Ollama Web Chat</h1>
+      <div class="model-selector">
+        <label for="modelSelect">Select Model:</label>
+        <select id="modelSelect">
+          {% for model in models %}
+            <option value="{{model}}">{{model}}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </header>
+
+    <section id="chatWindow" class="chat-window"></section>
+
+    <form id="chatForm" autocomplete="off">
+      <textarea id="inputMessage" placeholder="Type your message here..." rows="2"></textarea>
+      <button type="submit" id="sendButton">Send</button>
+    </form>
+  </div>
+
+<script>
+  (() => {
+    const wsUrlBase = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + "/ws/chat";
+
+    let ws = null;
+    let currentModel = document.getElementById('modelSelect').value;
+    const chatWindow = document.getElementById('chatWindow');
+    const inputMessage = document.getElementById('inputMessage');
+    const chatForm = document.getElementById('chatForm');
+    const modelSelect = document.getElementById('modelSelect');
+
+    let isConnected = false;
+
+    function createChatMessageElement(sender, message) {
+      const div = document.createElement('div');
+      div.classList.add('chat-message');
+      if(sender === 'user') {
+        div.classList.add('user-message');
+      } else if(sender === 'assistant') {
+        div.classList.add('assistant-message');
+      } else if(sender === 'status') {
+        div.classList.add('status-message');
+      }
+      div.textContent = message;
+      return div;
+    }
+
+    function addMessage(sender, text) {
+      const msgElem = createChatMessageElement(sender, text);
+      chatWindow.appendChild(msgElem);
+      chatWindow.scrollTop = chatWindow.scrollHeight;
+    }
+
+    function connectWebSocket() {
+      if(ws) {
+        ws.close();
+      }
+      ws = new WebSocket(wsUrlBase);
+
+      ws.onopen = () => {
+        isConnected = true;
+        // Send initial data with selected model and default system prompt
+        ws.send(JSON.stringify({
+          model: currentModel,
+          system_prompt: "You are a helpful assistant."
+        }));
+        addMessage('status', `Connected to model ${currentModel}`);
+        inputMessage.disabled = false;
+        inputMessage.focus();
+      };
+
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        switch(data.type) {
+          case 'status':
+            addMessage('status', data.msg);
+            break;
+          case 'user_message':
+            addMessage('user', data.content);
+            break;
+          case 'assistant_message':
+            addMessage('assistant', data.content);
+            break;
+          default:
+            console.warn('Unknown message type from server:', data);
+        }
+      };
+
+      ws.onclose = () => {
+        isConnected = false;
+        addMessage('status', 'Disconnected from server');
+        inputMessage.disabled = true;
+      };
+
+      ws.onerror = (e) => {
+        addMessage('status', 'WebSocket error: ' + e.message);
+        inputMessage.disabled = true;
+      };
+    }
+
+    modelSelect.addEventListener('change', () => {
+      currentModel = modelSelect.value;
+      addMessage('status', `Switching to model ${currentModel}...`);
+      connectWebSocket();
+    });
+
+    chatForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      if(!isConnected) {
+        addMessage('status', 'Not connected to server');
+        return;
+      }
+      const message = inputMessage.value.trim();
+      if(message) {
+        ws.send(JSON.stringify({type: 'user_message', content: message}));
+        inputMessage.value = '';
+      }
+    });
+
+    // Connect initially
+    connectWebSocket();
+  })();
+</script>
+</body>
+</html>
