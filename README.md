@@ -706,3 +706,5 @@ agentsteam shell
 ```
 
 **Happy coding with AI! 🚀**
+
+**Disclaimer** The following experiment and generated code are for demonstration purposes only. Use any AI-generated code at your own risk — AI can produce errors, hallucinations, or insecure patterns. Always review and test code carefully before deploying to production.
