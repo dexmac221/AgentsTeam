@@ -1,0 +1,171 @@
+@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap');
+
+/* CSS Reset */
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+html {
+    font-size: 16px;
+    line-height: 1.5;
+    font-family: 'Roboto', sans-serif;
+    background-color: var(--color-bg);
+    color: var(--color-text);
+}
+
+/* Theme Variables */
+:root {
+    --color-bg: #1e1e2f;
+    --color-bg-light: #2a2a3c;
+    --color-primary: #4e73df;
+    --color-primary-dark: #3b5bbf;
+    --color-success: #1cc88a;
+    --color-warning: #f6c23e;
+    --color-danger: #e74a3b;
+    --color-text: #f8f9fc;
+    --color-muted: #a4a4b3;
+    --border-radius: 0.5rem;
+    --transition-speed: 0.3s;
+    --shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+/* Utility Classes */
+.text-center { text-align: center; }
+.mt-1 { margin-top: 0.5rem; }
+.mb-1 { margin-bottom: 0.5rem; }
+.p-1 { padding: 0.5rem; }
+.bg-primary { background-color: var(--color-primary); }
+.bg-success { background-color: var(--color-success); }
+.bg-warning { background-color: var(--color-warning); }
+.bg-danger { background-color: var(--color-danger); }
+.text-muted { color: var(--color-muted); }
+
+/* Card Component */
+.card {
+    background-color: var(--color-bg-light);
+    border-radius: var(--border-radius);
+    box-shadow: var(--shadow);
+    padding: 1rem;
+    transition: transform var(--transition-speed) ease, box-shadow var(--transition-speed) ease;
+    cursor: pointer;
+}
+
+.card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
+}
+
+/* Progress Bar */
+.progress-container {
+    background-color: var(--color-bg-light);
+    border-radius: var(--border-radius);
+    overflow: hidden;
+    height: 0.75rem;
+    margin-top: 0.5rem;
+}
+
+.progress-bar {
+    height: 100%;
+    background-color: var(--color-primary);
+    width: 0;
+    transition: width 0.4s ease-in-out;
+}
+
+/* Status Indicators */
+.status-indicator {
+    display: inline-block;
+    width: 1rem;
+    height: 1rem;
+    border-radius: 50%;
+    margin-right: 0.5rem;
+}
+
+.status-success { background-color: var(--color-success); }
+.status-warning { background-color: var(--color-warning); }
+.status-danger  { background-color: var(--color-danger); }
+
+/* Button Styles */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.5rem 1rem;
+    border: none;
+    border-radius: var(--border-radius);
+    font-weight: 500;
+    font-size: 0.875rem;
+    cursor: pointer;
+    transition: background-color var(--transition-speed) ease, transform var(--transition-speed) ease;
+    text-decoration: none;
+    color: var(--color-text);
+}
+
+.btn-primary {
+    background-color: var(--color-primary);
+}
+
+.btn-primary:hover {
+    background-color: var(--color-primary-dark);
+    transform: translateY(-2px);
+}
+
+.btn-secondary {
+    background-color: var(--color-bg-light);
+    color: var(--color-primary);
+}
+
+.btn-secondary:hover {
+    background-color: var(--color-primary);
+    color: var(--color-text);
+}
+
+/* Table Styling */
+.table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 1rem;
+}
+
+.table th,
+.table td {
+    padding: 0.75rem;
+    text-align: left;
+    border-bottom: 1px solid var(--color-bg-light);
+}
+
+.table th {
+    background-color: var(--color-bg-light);
+    font-weight: 600;
+}
+
+.table tr:hover {
+    background-color: var(--color-bg-light);
+}
+
+/* Responsive Design */
+@media (min-width: 768px) {
+    .card {
+        padding: 1.5rem;
+    }
+
+    .btn {
+        font-size: 1rem;
+    }
+
+    .table th,
+    .table td {
+        padding: 1rem;
+    }
+}
+
+/* Animation Keyframes */
+@keyframes progress {
+    0% { width: 0; }
+    100% { width: var(--progress-value); }
+}
+
+/* .progress-bar { --progress-value: 70%; } */

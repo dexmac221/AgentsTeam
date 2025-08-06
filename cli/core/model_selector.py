@@ -51,7 +51,7 @@ class ModelSelector:
         """
         self.config = config
         self.logger = logger
-        self.ollama_base_url = config.get('ollama.base_url', 'http://localhost:11434')
+        self.ollama_base_url = config.get('ollama.base_url', 'http://192.168.1.62:11434')
         self.openai_api_key = config.get('openai.api_key')
     
     async def select_model(self, complexity: str) -> Dict[str, str]:
@@ -79,18 +79,18 @@ class ModelSelector:
             >>> print(f"Selected {model['model']} from {model['provider']}")
         """
         
-        # Model selection strategy
+        # Model selection strategy - prioritize local Ollama models with gpt-oss
         if complexity == 'simple':
-            # Try local models first for simple tasks
+            # Always try local models first for simple tasks
             return await self._select_local_model() or await self._select_cloud_model('fast')
         
         elif complexity == 'medium':
-            # Try larger local models, fallback to cloud
+            # Prefer larger local models, fallback to cloud only if needed
             return await self._select_local_model(prefer_large=True) or await self._select_cloud_model('balanced')
         
         else:  # complex
-            # Prefer cloud models for complex tasks
-            return await self._select_cloud_model('powerful') or await self._select_local_model(prefer_large=True)
+            # Still prefer local models (gpt-oss:20b is powerful enough), fallback to cloud
+            return await self._select_local_model(prefer_large=True) or await self._select_cloud_model('powerful')
     
     async def _select_local_model(self, prefer_large: bool = False) -> Optional[Dict[str, str]]:
         """Select best available Ollama model"""
@@ -100,9 +100,10 @@ class ModelSelector:
                 self.logger.debug("No Ollama models available")
                 return None
             
-            # Model preference order - prioritize coding models
+            # Model preference order - prioritize gpt-oss:20b and coding models
             if prefer_large:
                 preferred_order = [
+                    'gpt-oss:20b', 'gpt-oss',  # New preferred high-quality model
                     'qwen2.5-coder:32b', 'qwen2.5-coder:14b', 'qwen2.5-coder:7b', 
                     'codellama:13b', 'codellama:7b', 'codellama',
                     'llama3.1:70b', 'llama3.1:8b', 'llama3:8b',
@@ -111,6 +112,7 @@ class ModelSelector:
                 ]
             else:
                 preferred_order = [
+                    'gpt-oss:20b', 'gpt-oss',  # New preferred high-quality model
                     'qwen2.5-coder:7b', 'qwen2.5-coder:1.5b', 'qwen2.5-coder',
                     'codellama:7b', 'codellama',
                     'llama3.1:8b', 'llama3:8b', 'gemma2:9b',

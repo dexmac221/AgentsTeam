@@ -1,0 +1,7 @@
+fastapi==0.111.0          # Core framework
+uvicorn==0.30.1           # ASGI server
+psutil==6.0.0             # System monitoring utilities
+jinja2==3.1.4             # Templating engine for HTML rendering
+python-multipart==0.0.9   # Form data handling
+websockets==13.1          # WebSocket support
+aiofiles==23.2.1          # Async file handling for static files

@@ -232,21 +232,35 @@ class CodeGenerator:
     def _build_file_prompt(self, file_info: Dict, description: str, 
                           technologies: List[str], plan: Dict) -> str:
         """Build prompt for individual file generation"""
+        file_extension = Path(file_info['path']).suffix.lower()
+        
+        # Determine file type and language
+        language = self._get_language_from_extension(file_extension)
+        
         return f"""
-        Generate the complete content for: {file_info['path']}
+        Generate ONLY the code content for file: {file_info['path']}
+        
+        IMPORTANT INSTRUCTIONS:
+        - Generate ONLY executable code, no explanations or documentation outside the code
+        - Do NOT include markdown formatting, tables, or descriptive text
+        - Do NOT use ```code``` blocks or any markdown syntax
+        - Start directly with the code (imports, declarations, etc.)
+        - Include necessary comments INSIDE the code using proper comment syntax
+        - Make the code production-ready and complete
         
         File purpose: {file_info.get('description', 'Core file')}
+        Language: {language}
         Project: {description}
         Technologies: {', '.join(technologies)}
         
         File requirements:
-        - Follow best practices and conventions
-        - Include necessary imports and dependencies
-        - Add clear comments and documentation
-        - Make it production-ready
+        - Follow {language} best practices and conventions
+        - Include all necessary imports and dependencies
+        - Add clear comments using {language} comment syntax
+        - Make it production-ready and complete
         - Ensure it integrates with other project files
         
-        Generate ONLY the file content, no explanations.
+        GENERATE ONLY THE RAW {language.upper()} CODE - NO OTHER TEXT:
         """
     
     def _extract_json_from_response(self, response: str) -> str:
@@ -269,23 +283,172 @@ class CodeGenerator:
             return response.strip()
     
     def _extract_code_from_response(self, response: str, file_type: str) -> str:
-        """Extract code from LLM response"""
-        # Remove markdown code blocks
+        """Extract clean code from LLM response, removing explanatory text"""
+        
+        # First, try to extract from code blocks
         if '```' in response:
+            # Find all code blocks
+            code_blocks = []
             lines = response.split('\n')
             in_code_block = False
-            code_lines = []
+            current_block = []
             
             for line in lines:
                 if line.strip().startswith('```'):
-                    in_code_block = not in_code_block
+                    if in_code_block:
+                        # End of code block
+                        if current_block:
+                            code_blocks.append('\n'.join(current_block))
+                        current_block = []
+                        in_code_block = False
+                    else:
+                        # Start of code block
+                        in_code_block = True
                 elif in_code_block:
-                    code_lines.append(line)
+                    current_block.append(line)
             
-            if code_lines:
-                return '\n'.join(code_lines)
+            # If we found code blocks, use the largest one
+            if code_blocks:
+                return max(code_blocks, key=len).strip()
         
-        return response.strip()
+        # If no code blocks, try to clean the response
+        cleaned = self._clean_response_text(response)
+        
+        # If still looks like mixed content, try to extract just the code part
+        if self._contains_explanatory_text(cleaned):
+            code_part = self._extract_code_heuristically(cleaned, file_type)
+            if code_part:
+                return code_part
+        
+        return cleaned
+    
+    def _clean_response_text(self, text: str) -> str:
+        """Remove common non-code text patterns"""
+        lines = text.split('\n')
+        cleaned_lines = []
+        
+        for line in lines:
+            line = line.strip()
+            
+            # Skip lines that are clearly explanatory
+            if any(pattern in line.lower() for pattern in [
+                'below is', 'here is', 'here\'s', 'this is', 'this file',
+                'the following', 'above code', 'this code', 'explanation:',
+                'note:', 'important:', 'features:', 'requirements:',
+                '| feature |', '|---------|', 'implementation |'
+            ]):
+                continue
+                
+            # Skip markdown headers and tables
+            if line.startswith('#') or line.startswith('|') or line.startswith('*'):
+                continue
+                
+            # Skip empty lines at the start
+            if not cleaned_lines and not line:
+                continue
+                
+            cleaned_lines.append(line)
+        
+        return '\n'.join(cleaned_lines).strip()
+    
+    def _contains_explanatory_text(self, text: str) -> bool:
+        """Check if text contains explanatory content mixed with code"""
+        explanatory_patterns = [
+            'below is', 'here is', 'this file', 'the following',
+            'features implemented', 'requirements', 'description',
+            '| feature |', 'implementation', 'note that'
+        ]
+        
+        first_lines = text.split('\n')[:5]
+        first_part = ' '.join(first_lines).lower()
+        
+        return any(pattern in first_part for pattern in explanatory_patterns)
+    
+    def _extract_code_heuristically(self, text: str, file_type: str) -> str:
+        """Extract code using heuristics based on file type"""
+        lines = text.split('\n')
+        
+        # Find the first line that looks like code
+        code_start = 0
+        for i, line in enumerate(lines):
+            line = line.strip()
+            
+            # Python file detection
+            if file_type == 'python' and (
+                line.startswith('import ') or 
+                line.startswith('from ') or
+                line.startswith('def ') or
+                line.startswith('class ') or
+                line.startswith('#!/usr/bin/env python') or
+                line.startswith('"""') or
+                line.startswith('# ')
+            ):
+                code_start = i
+                break
+                
+            # JavaScript/HTML file detection
+            elif file_type in ['javascript', 'html'] and (
+                line.startswith('<!DOCTYPE') or
+                line.startswith('<html') or
+                line.startswith('function') or
+                line.startswith('const ') or
+                line.startswith('let ') or
+                line.startswith('var ') or
+                line.startswith('// ')
+            ):
+                code_start = i
+                break
+                
+            # CSS file detection
+            elif file_type == 'css' and (
+                '/*' in line or '{' in line or line.endswith(':')
+            ):
+                code_start = i
+                break
+                
+            # Generic code detection
+            elif any(char in line for char in ['{', '}', '(', ')', '=', ';']):
+                code_start = i
+                break
+        
+        # Extract from code start to end, removing trailing explanatory text
+        code_lines = lines[code_start:]
+        
+        # Remove trailing explanatory content
+        final_lines = []
+        for line in code_lines:
+            if any(pattern in line.lower() for pattern in [
+                'this code', 'the above', 'features include', 'to use this'
+            ]):
+                break
+            final_lines.append(line)
+        
+        return '\n'.join(final_lines).strip()
+    
+    def _get_language_from_extension(self, extension: str) -> str:
+        """Get programming language from file extension"""
+        extension_map = {
+            '.py': 'Python',
+            '.js': 'JavaScript',
+            '.ts': 'TypeScript',
+            '.html': 'HTML',
+            '.css': 'CSS',
+            '.json': 'JSON',
+            '.yaml': 'YAML',
+            '.yml': 'YAML',
+            '.md': 'Markdown',
+            '.txt': 'text',
+            '.sh': 'Bash',
+            '.sql': 'SQL',
+            '.go': 'Go',
+            '.rs': 'Rust',
+            '.java': 'Java',
+            '.cpp': 'C++',
+            '.c': 'C',
+            '.php': 'PHP',
+            '.rb': 'Ruby'
+        }
+        return extension_map.get(extension.lower(), 'text')
     
     def _create_fallback_plan(self, description: str, technologies: List[str]) -> Dict:
         """Create basic project structure when AI planning fails"""

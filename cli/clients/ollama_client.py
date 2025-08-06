@@ -54,10 +54,26 @@ class OllamaClient:
             Exception: If model is unavailable or generation fails
         """
         try:
-            # Build messages
+            # Build messages with enhanced system prompt for code generation
             messages = []
-            if system_prompt:
-                messages.append({"role": "system", "content": system_prompt})
+            
+            # Use enhanced system prompt for code generation
+            if not system_prompt:
+                system_prompt = self._get_default_system_prompt()
+            
+            # Enhance system prompt for better code generation
+            enhanced_system_prompt = f"""{system_prompt}
+
+CRITICAL INSTRUCTIONS:
+- Generate ONLY executable code, no explanations or markdown
+- Do NOT use ```code``` blocks or markdown formatting
+- Do NOT include tables, descriptions, or explanatory text
+- Start directly with code (imports, function definitions, etc.)
+- Include comments INSIDE the code using proper comment syntax
+- Make code complete and production-ready
+- If generating multiple files, clearly separate them with file headers"""
+
+            messages.append({"role": "system", "content": enhanced_system_prompt})
             messages.append({"role": "user", "content": prompt})
             
             payload = {
@@ -67,7 +83,9 @@ class OllamaClient:
                 "options": {
                     "temperature": 0.1,  # Lower temperature for more consistent code
                     "top_p": 0.9,
-                    "top_k": 40
+                    "top_k": 40,
+                    "repeat_penalty": 1.1,
+                    "num_predict": 4096  # Allow longer responses for complex code
                 }
             }
             
@@ -79,7 +97,10 @@ class OllamaClient:
                 ) as response:
                     if response.status == 200:
                         result = await response.json()
-                        return result.get('message', {}).get('content', '')
+                        content = result.get('message', {}).get('content', '')
+                        
+                        # Post-process to clean up common issues
+                        return self._clean_generated_content(content)
                     else:
                         error_text = await response.text()
                         raise Exception(f"Ollama API error {response.status}: {error_text}")
@@ -87,6 +108,38 @@ class OllamaClient:
         except Exception as e:
             self.logger.error(f"Ollama generation error: {e}")
             raise Exception(f"Failed to generate with Ollama: {e}")
+    
+    def _get_default_system_prompt(self) -> str:
+        """Get default system prompt for code generation"""
+        return """You are an expert software developer specializing in clean, production-ready code generation. 
+Generate only executable code without any explanatory text, markdown formatting, or documentation outside the code itself.
+Follow best practices and include appropriate comments within the code."""
+    
+    def _clean_generated_content(self, content: str) -> str:
+        """Clean common issues in generated content"""
+        # Remove common prefixes that models sometimes add
+        prefixes_to_remove = [
+            "Here's the code:",
+            "Here is the code:",
+            "Below is the code:",
+            "The code is:",
+            "```python",
+            "```javascript",
+            "```html",
+            "```css",
+            "```json",
+            "```",
+        ]
+        
+        for prefix in prefixes_to_remove:
+            if content.strip().startswith(prefix):
+                content = content[len(prefix):].strip()
+        
+        # Remove trailing markdown
+        if content.strip().endswith("```"):
+            content = content.rsplit("```", 1)[0].strip()
+        
+        return content
     
     async def check_model_available(self, model: str) -> bool:
         """Check if a model is available locally"""

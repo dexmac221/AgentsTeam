@@ -64,7 +64,7 @@ class AgentsTeamShell:
         self.current_dir = Path.cwd()
         self.chat_history = []
         self.current_model_info = None
-        self.force_provider = None  # None, 'ollama', or 'openai'
+        self.force_provider = 'ollama'  # Default to Ollama with gpt-oss models
         
         # RAG and context management
         self.project_context = {}
@@ -156,16 +156,28 @@ class AgentsTeamShell:
         print(f"📍 Ollama: {'✅ Available' if ollama_available else '❌ Not available'}")
         print(f"   Server: {ollama_url}")
         if ollama_available:
-            if len(models) <= 5:
-                print(f"   Models: {', '.join(models)}")
+            # Check if gpt-oss models are available
+            gpt_oss_models = [m for m in models if 'gpt-oss' in m.lower()]
+            if gpt_oss_models:
+                print(f"   🎯 Preferred: {', '.join(gpt_oss_models)}")
+                other_models = [m for m in models if 'gpt-oss' not in m.lower()]
+                if len(other_models) <= 3:
+                    print(f"   Others: {', '.join(other_models)}")
+                else:
+                    print(f"   Others: {', '.join(other_models[:3])} (+{len(other_models)-3} more)")
             else:
-                print(f"   Models: {', '.join(models[:5])} (+{len(models)-5} more)")
-                print(f"           Use /models to see all available models")
+                if len(models) <= 5:
+                    print(f"   Models: {', '.join(models)}")
+                else:
+                    print(f"   Models: {', '.join(models[:5])} (+{len(models)-5} more)")
+            print(f"           Use /models to see all available models")
         
-        print(f"☁️ OpenAI: {'✅ Available (gpt-4o-mini)' if openai_available else '❌ Not configured'}")
+        print(f"☁️ OpenAI: {'✅ Available' if openai_available else '❌ Not configured'}")
         
-        # Show current mode
-        mode = "🔄 Auto (smart selection)" if not self.force_provider else f"🔒 Forced to {self.force_provider}"
+        # Show current mode - default to Ollama
+        mode = "🏠 Ollama (local models)" if not self.force_provider or self.force_provider == 'ollama' else f"🔒 Forced to {self.force_provider}"
+        if not ollama_available:
+            mode = "☁️ OpenAI (cloud models)" if openai_available else "❌ No models available"
         print(f"🧠 Mode: {mode}")
         print()
         
