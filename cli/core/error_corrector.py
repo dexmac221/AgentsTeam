@@ -9,11 +9,9 @@ for various programming languages and runtime environments.
 import asyncio
 import os
 import re
-import subprocess
-import traceback
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-import json
 
 class ErrorCorrector:
     """
@@ -131,8 +129,9 @@ class ErrorCorrector:
         except Exception as e:
             return {'success': False, 'error': f'Could not read file: {e}'}
         
-        # Create backup
-        backup_path = file_path.with_suffix(file_path.suffix + '.backup')
+        # Create timestamped backup
+        ts = datetime.now().strftime('%Y-%m-%dT%H-%M-%S')
+        backup_path = file_path.with_suffix(file_path.suffix + f'.backup.{ts}')
         try:
             with open(backup_path, 'w', encoding='utf-8') as f:
                 f.write(original_content)
@@ -165,7 +164,7 @@ class ErrorCorrector:
                 if retry_result.get('success'):
                     with open(file_path, 'w', encoding='utf-8') as f:
                         f.write(retry_result['fixed_code'])
-                    # Optionally validate again; we do it to ensure correctness
+                    # Validate again
                     valid2, stderr2 = await self._validate_file(language, file_path)
                     if not valid2:
                         return {'success': False, 'error': f'Post-fix validation failed: {stderr2[:400] if stderr2 else "unknown"}'}
@@ -223,22 +222,25 @@ class ErrorCorrector:
             r'File "([^"]+)", line (\d+)': {'language': 'python', 'fixable': True},
             r'SyntaxError|NameError|AttributeError|ImportError|TypeError|IndentationError|ModuleNotFoundError|FileNotFoundError|ValueError': {'language': 'python', 'fixable': True},
             r"ModuleNotFoundError: No module named '([^']+)'": {'language': 'python', 'fixable': True},
-            
-            # JavaScript/TypeScript errors  
-            r'Error: .+ at .+:(\d+):(\d+)': {'language': 'javascript', 'fixable': True},
+
+            # JavaScript/TypeScript errors (capture file path when present)
+            r' at ([^\s:()]+):(\d+):(\d+)': {'language': 'javascript', 'fixable': True},
+            r'\(([^\)]+):(\d+):(\d+)\)': {'language': 'javascript', 'fixable': True},
+            r'([\w./-]+\.tsx?):(\d+):(\d+)': {'language': 'typescript', 'fixable': True},
+            r'([\w./-]+\.jsx?):(\d+):(\d+)': {'language': 'javascript', 'fixable': True},
             r'SyntaxError|ReferenceError|TypeError': {'language': 'javascript', 'fixable': True},
-            
-            # C/C++ errors
-            r'(\w+\.c[p]*):(\d+):(\d+): error:': {'language': 'c', 'fixable': True},
+
+            # C/C++ errors (allow full paths)
+            r'([\w./-]+\.(?:c|cc|cpp|cxx)):(\d+):(\d+): error:': {'language': 'c', 'fixable': True},
             r'undefined reference|undeclared|expected': {'language': 'c', 'fixable': True},
-            
-            # Java errors
-            r'(\w+\.java):(\d+): error:': {'language': 'java', 'fixable': True},
+
+            # Java errors (allow full paths)
+            r'([\w./-]+\.java):(\d+): error:': {'language': 'java', 'fixable': True},
             r'cannot find symbol|class .+ is public': {'language': 'java', 'fixable': True},
-            
+
             # Rust errors
             r'error\[E\d+\]: .+ --> ([^:]+):(\d+):(\d+)': {'language': 'rust', 'fixable': True},
-            
+
             # Go errors
             r'([^:]+):(\d+):(\d+): ': {'language': 'go', 'fixable': True}
         }
@@ -397,9 +399,39 @@ class ErrorCorrector:
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE
                 )
-                out, err = await proc.communicate()
-                return proc.returncode == 0, (err.decode('utf-8', errors='replace') if err else '')
-            # For other languages, skip strict validation for now
+            elif language == 'javascript':
+                # Node syntax check (supported in modern Node)
+                proc = await asyncio.create_subprocess_exec(
+                    'node', '--check', str(file_path),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+            elif language == 'typescript':
+                proc = await asyncio.create_subprocess_exec(
+                    'tsc', '--noEmit', str(file_path),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+            elif language == 'go':
+                proc = await asyncio.create_subprocess_exec(
+                    'go', 'build', str(file_path),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+            elif language == 'java':
+                proc = await asyncio.create_subprocess_exec(
+                    'javac', str(file_path),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+            else:
+                return True, None
+            
+            out, err = await proc.communicate()
+            stderr_text = (err.decode('utf-8', errors='replace') if err else '')
+            return proc.returncode == 0, stderr_text
+        except FileNotFoundError:
+            # Tool not available; skip validation
             return True, None
         except Exception as e:
             return False, str(e)
