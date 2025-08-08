@@ -159,6 +159,9 @@ agentsteam fix --run-command "python main.py" --max-attempts 3
 
 # Fix a specific file
 agentsteam fix --file main.py
+
+# Recursive scan (Python): run without args to scan the repo
+agentsteam fix
 ```
 
 Improved fixer (latest):
@@ -167,6 +170,20 @@ Improved fixer (latest):
 - Safe writes with .backup files
 
 Tip: Use --debug with fix to view applied changes.
+
+Validators and toolchains:
+- Python: py_compile
+- JavaScript: node --check
+- TypeScript: tsc --noEmit (requires tsc)
+- Go: go build
+- Java: javac
+- C: cc/gcc/clang -fsyntax-only
+- C++: c++/g++/clang++ -fsyntax-only
+- Rust: rustc --emit=metadata
+
+Notes:
+- Validators run only if the corresponding toolchain is installed; otherwise validation is skipped for that file.
+- Recursive Python scan ignores common folders (.git, .venv, venv, node_modules, __pycache__, dist, build, .mypy_cache, .pytest_cache, .idea, .vscode) and caps at 200 files for speed.
 
 ## Intelligent Model Selection
 Priority order:
@@ -188,7 +205,7 @@ You can run them from their directories; see each subfolder’s README or main f
 ## Architecture
 AgentsTeam uses modular components:
 - ModelSelector: picks local/cloud model and scans Ollama hosts
-- CodeGenerator: prompts provider for plan/files and writes code
+- CodeGenerator: prompts provider for plan/files and writes code; with Ollama, "code-only" output is applied only when generating file contents. Plans and setup instructions remain plain text to avoid corruption.
 - ErrorCorrector: detects and fixes errors with AI, using backups
 - Clients: Ollama (local) and OpenAI (cloud)
 - Utils: config and logging
