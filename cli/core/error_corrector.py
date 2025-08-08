@@ -37,9 +37,13 @@ class ErrorCorrector:
         self.supported_languages = {
             '.py': 'python',
             '.js': 'javascript', 
+            '.jsx': 'javascript',
             '.ts': 'typescript',
+            '.tsx': 'typescript',
             '.c': 'c',
+            '.cc': 'cpp',
             '.cpp': 'cpp',
+            '.cxx': 'cpp',
             '.java': 'java',
             '.rs': 'rust',
             '.go': 'go'
@@ -240,21 +244,32 @@ class ErrorCorrector:
 
             # Rust errors
             r'error\[E\d+\]: .+ --> ([^:]+):(\d+):(\d+)': {'language': 'rust', 'fixable': True},
+            r'--> ([^:]+):(\d+):(\d+)': {'language': 'rust', 'fixable': True},
 
             # Go errors
             r'([^:]+):(\d+):(\d+): ': {'language': 'go', 'fixable': True}
         }
         
         for pattern, info in error_patterns.items():
-            if re.search(pattern, stderr, re.IGNORECASE):
-                match = re.search(pattern, stderr)
+            match = re.search(pattern, stderr, re.IGNORECASE)
+            if match:
+                # Prefer language inferred from the matched file's extension when available
+                lang = info['language']
+                file_match = match.group(1) if match.lastindex and match.lastindex >= 1 else None
+                if file_match:
+                    try:
+                        ext_lang = self.supported_languages.get(Path(file_match).suffix.lower())
+                        if ext_lang:
+                            lang = ext_lang
+                    except Exception:
+                        pass
                 return {
                     'fixable': True,
-                    'language': info['language'],
+                    'language': lang,
                     'error_text': stderr,
                     'command': command,
-                    'file_match': match.group(1) if match and len(match.groups()) > 0 else None,
-                    'line_number': match.group(2) if match and len(match.groups()) > 1 else None
+                    'file_match': file_match,
+                    'line_number': match.group(2) if match.lastindex and match.lastindex >= 2 else None
                 }
         
         return {'fixable': False, 'error_text': stderr}
@@ -310,7 +325,8 @@ class ErrorCorrector:
         current_dir = Path('.')
         common_files = {
             'python': ['main.py', 'app.py', '*.py'],
-            'javascript': ['main.js', 'index.js', 'app.js', '*.js'],
+            'javascript': ['main.js', 'index.js', 'app.js', '*.js', 'index.jsx', '*.jsx'],
+            'typescript': ['index.ts', '*.ts', 'index.tsx', '*.tsx'],
             'c': ['main.c', '*.c'],
             'java': ['Main.java', '*.java'],
             'rust': ['main.rs', 'lib.rs', '*.rs'],
@@ -380,6 +396,9 @@ class ErrorCorrector:
                 break
         if code_start is not None:
             candidate = '\n'.join(lines[code_start:]).strip()
+            # Guard: don't accept pure explanation text as code
+            if candidate.upper().startswith('EXPLANATION:'):
+                return None
             # Trim trailing narrative markers if any
             tail_markers = ['EXPLANATION:', 'Explanation:', 'Notes:', 'Usage:']
             for m in tail_markers:
@@ -395,53 +414,80 @@ class ErrorCorrector:
         try:
             if language == 'python':
                 proc = await asyncio.create_subprocess_exec(
-                    'python', '-m', 'py_compile', str(file_path),
+                    'python', '-m', 'py_compile', file_path.name,
                     stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=str(file_path.parent)
                 )
             elif language == 'javascript':
                 proc = await asyncio.create_subprocess_exec(
-                    'node', '--check', str(file_path),
+                    'node', '--check', file_path.name,
                     stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=str(file_path.parent)
                 )
             elif language == 'typescript':
                 proc = await asyncio.create_subprocess_exec(
-                    'tsc', '--noEmit', str(file_path),
+                    'tsc', '--noEmit', file_path.name,
                     stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=str(file_path.parent)
                 )
             elif language == 'go':
                 proc = await asyncio.create_subprocess_exec(
-                    'go', 'build', str(file_path),
+                    'go', 'build', file_path.name,
                     stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=str(file_path.parent)
                 )
             elif language == 'java':
                 proc = await asyncio.create_subprocess_exec(
-                    'javac', str(file_path),
+                    'javac', file_path.name,
                     stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=str(file_path.parent)
                 )
             elif language == 'c':
-                # Try cc/gcc clang syntax-only
-                proc = await asyncio.create_subprocess_exec(
-                    'cc', '-fsyntax-only', str(file_path),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
+                # Try cc/gcc/clang syntax-only in order
+                proc = None
+                for compiler in ('cc', 'gcc', 'clang'):
+                    try:
+                        proc = await asyncio.create_subprocess_exec(
+                            compiler, '-fsyntax-only', file_path.name,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                            cwd=str(file_path.parent)
+                        )
+                        break
+                    except FileNotFoundError:
+                        proc = None
+                        continue
+                if proc is None:
+                    return True, None
             elif language == 'cpp':
-                proc = await asyncio.create_subprocess_exec(
-                    'c++', '-fsyntax-only', str(file_path),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
+                # Try c++/g++/clang++ syntax-only in order
+                proc = None
+                for compiler in ('c++', 'g++', 'clang++'):
+                    try:
+                        proc = await asyncio.create_subprocess_exec(
+                            compiler, '-fsyntax-only', file_path.name,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                            cwd=str(file_path.parent)
+                        )
+                        break
+                    except FileNotFoundError:
+                        proc = None
+                        continue
+                if proc is None:
+                    return True, None
             elif language == 'rust':
                 # rustc metadata emission is fast and doesn't link
                 proc = await asyncio.create_subprocess_exec(
-                    'rustc', '--emit=metadata', str(file_path),
+                    'rustc', '--emit=metadata', file_path.name,
                     stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=str(file_path.parent)
                 )
             else:
                 return True, None
