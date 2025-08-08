@@ -130,12 +130,11 @@ async def handle_models(config, logger):
     if not any_ollama:
         print("\n❌ Ollama not available (install: curl -fsSL https://ollama.com/install.sh | sh)")
     
-    # Check OpenAI
+    # Check OpenAI (align with selector choices)
     if config.get('openai.api_key'):
         print("\n☁️ OpenAI:")
         print("  • gpt-4o")
         print("  • gpt-4o-mini")
-        print("  • gpt-3.5-turbo")
     else:
         print("\n❌ OpenAI not configured (run: agentsteam config --openai-key YOUR_KEY)")
 
@@ -268,20 +267,24 @@ async def handle_fix(args, config, logger):
         else:
             print("🔍 Scanning current directory for issues...")
             
-            # Look for Python files with errors
-            import os
-            from pathlib import Path
-            
             current_dir = Path('.')
-            python_files = list(current_dir.glob('*.py'))
+            ignored_dirs = {'.git', '.venv', 'venv', 'node_modules', '__pycache__', 'dist', 'build', '.mypy_cache', '.pytest_cache', '.idea', '.vscode'}
+            
+            def is_ignored(path: Path) -> bool:
+                return any(part in ignored_dirs for part in path.parts)
+            
+            # Recursive Python scan with a safety cap
+            python_files = [p for p in current_dir.rglob('*.py') if not is_ignored(p)]
+            max_files = 200
+            if len(python_files) > max_files:
+                print(f"Found {len(python_files)} Python files; limiting to first {max_files} to avoid long scans.")
+                python_files = python_files[:max_files]
             
             if python_files:
                 print(f"Found {len(python_files)} Python files. Checking for issues...")
                 
                 for py_file in python_files:
                     print(f"\n🔍 Checking {py_file}...")
-                    
-                    # Try to run a basic syntax check
                     try:
                         process = await asyncio.create_subprocess_exec(
                             'python', '-m', 'py_compile', str(py_file),
@@ -305,7 +308,7 @@ async def handle_fix(args, config, logger):
                     except Exception as e:
                         print(f"⚠️ Could not check {py_file}: {e}")
             else:
-                print("No Python files found in current directory.")
+                print("No Python files found.")
                 print("\nUsage examples:")
                 print("  agentsteam fix --file main.py")
                 print("  agentsteam fix --run-command 'python main.py'")
