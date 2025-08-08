@@ -400,7 +400,6 @@ class ErrorCorrector:
                     stderr=asyncio.subprocess.PIPE
                 )
             elif language == 'javascript':
-                # Node syntax check (supported in modern Node)
                 proc = await asyncio.create_subprocess_exec(
                     'node', '--check', str(file_path),
                     stdout=asyncio.subprocess.PIPE,
@@ -421,6 +420,26 @@ class ErrorCorrector:
             elif language == 'java':
                 proc = await asyncio.create_subprocess_exec(
                     'javac', str(file_path),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+            elif language == 'c':
+                # Try cc/gcc clang syntax-only
+                proc = await asyncio.create_subprocess_exec(
+                    'cc', '-fsyntax-only', str(file_path),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+            elif language == 'cpp':
+                proc = await asyncio.create_subprocess_exec(
+                    'c++', '-fsyntax-only', str(file_path),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+            elif language == 'rust':
+                # rustc metadata emission is fast and doesn't link
+                proc = await asyncio.create_subprocess_exec(
+                    'rustc', '--emit=metadata', str(file_path),
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE
                 )
