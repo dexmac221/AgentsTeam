@@ -155,6 +155,30 @@ class ErrorCorrector:
             with open(file_path, 'w', encoding='utf-8') as f:
                 f.write(fix_result['fixed_code'])
             
+            # Post-fix validation (single retry on failure)
+            valid, stderr = await self._validate_file(language, file_path)
+            if not valid:
+                self.logger.debug(f"Post-fix validation failed, retrying once with new error. Stderr head: {stderr[:200] if stderr else ''}")
+                retry_result = await self._generate_code_fix(
+                    file_path, fix_result['fixed_code'], language, stderr or error_message
+                )
+                if retry_result.get('success'):
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        f.write(retry_result['fixed_code'])
+                    # Optionally validate again; we do it to ensure correctness
+                    valid2, stderr2 = await self._validate_file(language, file_path)
+                    if not valid2:
+                        return {'success': False, 'error': f'Post-fix validation failed: {stderr2[:400] if stderr2 else "unknown"}'}
+                    return {
+                        'success': True,
+                        'file': str(file_path),
+                        'backup': str(backup_path),
+                        'changes': retry_result.get('explanation', fix_result.get('explanation', 'Applied automatic fix')),
+                        'fixed_code': retry_result['fixed_code']
+                    }
+                else:
+                    return {'success': False, 'error': f"Retry fix generation failed: {retry_result.get('error','unknown')}"}
+            
             return {
                 'success': True,
                 'file': str(file_path),
@@ -197,7 +221,8 @@ class ErrorCorrector:
         error_patterns = {
             # Python errors
             r'File "([^"]+)", line (\d+)': {'language': 'python', 'fixable': True},
-            r'SyntaxError|NameError|AttributeError|ImportError|TypeError': {'language': 'python', 'fixable': True},
+            r'SyntaxError|NameError|AttributeError|ImportError|TypeError|IndentationError|ModuleNotFoundError|FileNotFoundError|ValueError': {'language': 'python', 'fixable': True},
+            r"ModuleNotFoundError: No module named '([^']+)'": {'language': 'python', 'fixable': True},
             
             # JavaScript/TypeScript errors  
             r'Error: .+ at .+:(\d+):(\d+)': {'language': 'javascript', 'fixable': True},
@@ -292,6 +317,7 @@ class ErrorCorrector:
         
         language = error_info.get('language')
         if language in common_files:
+            # Non-recursive quick check
             for pattern in common_files[language]:
                 if '*' in pattern:
                     files = list(current_dir.glob(pattern))
@@ -301,6 +327,17 @@ class ErrorCorrector:
                     file_path = current_dir / pattern
                     if file_path.exists():
                         return file_path
+            # Recursive search as fallback
+            for pattern in common_files[language]:
+                if '*' in pattern:
+                    files = list(current_dir.rglob(pattern))
+                    if files:
+                        return files[0]
+                else:
+                    # direct names searched recursively
+                    files = list(current_dir.rglob(pattern))
+                    if files:
+                        return files[0]
         
         return None
     
@@ -316,13 +353,19 @@ class ErrorCorrector:
         if code_match:
             return code_match.group(1).strip()
         
-        # 2) Any fenced code block, pick the largest
+        # 2) Any fenced code block that matches the language tag
+        lang_tag = (language or '').strip().lower()
+        if lang_tag:
+            lang_fences = re.findall(rf'```{re.escape(lang_tag)}\s*(.+?)\s*```', response, re.DOTALL | re.IGNORECASE)
+            if lang_fences:
+                return max((b.strip() for b in lang_fences), key=len)
+        
+        # 3) Any fenced code block, pick the largest
         fences = re.findall(r'```(?:\w+)?\s*(.+?)\s*```', response, re.DOTALL)
         if fences:
-            # choose the largest block assuming it's the full file
             return max((b.strip() for b in fences), key=len)
         
-        # 3) Heuristic: if it looks like code, extract from first code-looking line
+        # 4) Heuristic: if it looks like code, extract from first code-looking line
         lines = response.split('\n')
         code_start = None
         for i, line in enumerate(lines):
@@ -344,6 +387,22 @@ class ErrorCorrector:
             return candidate if candidate else None
         
         return None
+    
+    async def _validate_file(self, language: str, file_path: Path) -> Tuple[bool, Optional[str]]:
+        """Perform a lightweight syntax/build validation for the given file."""
+        try:
+            if language == 'python':
+                proc = await asyncio.create_subprocess_exec(
+                    'python', '-m', 'py_compile', str(file_path),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                out, err = await proc.communicate()
+                return proc.returncode == 0, (err.decode('utf-8', errors='replace') if err else '')
+            # For other languages, skip strict validation for now
+            return True, None
+        except Exception as e:
+            return False, str(e)
     
     async def _generate_code_fix(self, file_path: Path, content: str, language: str, error_message: str) -> Dict:
         """Use AI to generate a fix for the code."""
@@ -388,6 +447,8 @@ Make sure the fixed code is complete, syntactically correct, and addresses the s
             
             # Try robust extraction
             fixed_code = self._extract_fixed_code(response, language)
+            if not fixed_code:
+                self.logger.debug(f"Extraction failed on primary response. Head: {response[:200] if response else ''}")
             explanation_match = re.search(r'EXPLANATION:\s*(.+?)(?=FIXED_CODE:|```|$)', response, re.DOTALL)
             explanation = explanation_match.group(1).strip() if explanation_match else "Applied automatic fix"
             
@@ -414,6 +475,8 @@ Original content was provided earlier."""
                 )
             )
             fixed_code = self._extract_fixed_code(retry_resp, language)
+            if not fixed_code:
+                self.logger.debug(f"Extraction failed on strict retry. Head: {retry_resp[:200] if retry_resp else ''}")
             if fixed_code:
                 return {
                     'success': True,

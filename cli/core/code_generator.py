@@ -75,7 +75,7 @@ class CodeGenerator:
         Args:
             description (str): Natural language description of the project
             technologies (List[str]): List of technologies/frameworks to use
-            model_info (Dict[str, str]): Information about the AI model to use
+            model_info (Dict[str, str): Information about the AI model to use
                                        containing 'provider' and 'model' keys
             output_dir (Path): Directory where the project should be created
             
@@ -146,12 +146,20 @@ class CodeGenerator:
         # Build prompt based on complexity
         prompt = self._build_project_prompt(description, technologies)
         
-        # Generate project plan first
-        plan_response = await client.generate(
-            model=model_info['model'],
-            prompt=f"{prompt}\n\nFirst, create a JSON project plan with file structure and descriptions.",
-            system_prompt="You are an expert software architect. Respond with well-structured JSON only."
-        )
+        # Generate project plan first (disable code-only behavior for Ollama)
+        if isinstance(client, OllamaClient):
+            plan_response = await client.generate(
+                model=model_info['model'],
+                prompt=f"{prompt}\n\nFirst, create a JSON project plan with file structure and descriptions.",
+                system_prompt="You are an expert software architect. Respond with well-structured JSON only.",
+                code_only=False
+            )
+        else:
+            plan_response = await client.generate(
+                model=model_info['model'],
+                prompt=f"{prompt}\n\nFirst, create a JSON project plan with file structure and descriptions.",
+                system_prompt="You are an expert software architect. Respond with well-structured JSON only."
+            )
         
         try:
             # Parse project plan
@@ -174,14 +182,25 @@ class CodeGenerator:
                 file_info, description, technologies, plan
             )
             
-            content_response = await client.generate(
-                model=model_info['model'],
-                prompt=file_prompt,
-                system_prompt="You are an expert programmer. Generate clean, production-ready code with comments."
-            )
+            # For file content, request code-only behavior on Ollama
+            if isinstance(client, OllamaClient):
+                content_response = await client.generate(
+                    model=model_info['model'],
+                    prompt=file_prompt,
+                    system_prompt="You are an expert programmer. Generate clean, production-ready code with comments.",
+                    code_only=True
+                )
+            else:
+                content_response = await client.generate(
+                    model=model_info['model'],
+                    prompt=file_prompt,
+                    system_prompt="You are an expert programmer. Generate clean, production-ready code with comments."
+                )
             
             # Extract and save code
-            file_content = self._extract_code_from_response(content_response, file_info.get('type', 'text'))
+            # Prefer language by extension, not the plan-provided type
+            inferred_language = self._get_language_from_extension(Path(file_info['path']).suffix)
+            file_content = self._extract_code_from_response(content_response, inferred_language.lower())
             
             with open(file_path, 'w', encoding='utf-8') as f:
                 f.write(file_content)
@@ -189,7 +208,7 @@ class CodeGenerator:
             files_created += 1
             self.logger.info(f"Generated: {file_path}")
         
-        # Generate setup instructions
+        # Generate setup instructions (disable code-only behavior on Ollama)
         instructions_prompt = f"""
         Based on this project: {description}
         Technologies: {', '.join(technologies)}
@@ -198,11 +217,19 @@ class CodeGenerator:
         Provide 3-5 clear setup and run instructions for the user.
         """
         
-        instructions_response = await client.generate(
-            model=model_info['model'],
-            prompt=instructions_prompt,
-            system_prompt="Provide clear, actionable setup instructions as a simple list."
-        )
+        if isinstance(client, OllamaClient):
+            instructions_response = await client.generate(
+                model=model_info['model'],
+                prompt=instructions_prompt,
+                system_prompt="Provide clear, actionable setup instructions as a simple list.",
+                code_only=False
+            )
+        else:
+            instructions_response = await client.generate(
+                model=model_info['model'],
+                prompt=instructions_prompt,
+                system_prompt="Provide clear, actionable setup instructions as a simple list."
+            )
         
         instructions = self._parse_instructions(instructions_response)
         
@@ -211,7 +238,7 @@ class CodeGenerator:
             'instructions': instructions,
             'plan': plan
         }
-    
+
     def _build_project_prompt(self, description: str, technologies: List[str]) -> str:
         """Build comprehensive project prompt"""
         tech_str = ', '.join(technologies) if technologies else 'appropriate technologies'
@@ -294,35 +321,37 @@ class CodeGenerator:
             lines = response.split('\n')
             in_code_block = False
             current_block = []
+            current_lang = None
+            target_lang = file_type.lower()
             
             for line in lines:
                 if line.strip().startswith('```'):
                     if in_code_block:
                         # End of code block
                         if current_block:
-                            code_blocks.append('\n'.join(current_block))
+                            block_text = '\n'.join(current_block)
+                            code_blocks.append((current_lang, block_text))
                         current_block = []
+                        current_lang = None
                         in_code_block = False
                     else:
-                        # Start of code block
+                        # Start of code block, optionally capture language
                         in_code_block = True
+                        fence = line.strip().lstrip('`')
+                        parts = fence.split()
+                        current_lang = parts[1].lower() if len(parts) > 1 else None
                 elif in_code_block:
                     current_block.append(line)
             
-            # If we found code blocks, use the largest one
+            # If we found code blocks, prefer matching language, else largest
             if code_blocks:
-                return max(code_blocks, key=len).strip()
+                matching = [b for lang, b in code_blocks if lang and target_lang and lang.startswith(target_lang)]
+                if matching:
+                    return max(matching, key=len).strip()
+                return max((b for _, b in code_blocks), key=len).strip()
         
-        # If no code blocks, try to clean the response
-        cleaned = self._clean_response_text(response)
-        
-        # If still looks like mixed content, try to extract just the code part
-        if self._contains_explanatory_text(cleaned):
-            code_part = self._extract_code_heuristically(cleaned, file_type)
-            if code_part:
-                return code_part
-        
-        return cleaned
+        # If no code blocks, return as-is
+        return response.strip()
     
     def _clean_response_text(self, text: str) -> str:
         """Remove common non-code text patterns"""

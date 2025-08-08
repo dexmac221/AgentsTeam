@@ -39,7 +39,7 @@ class OllamaClient:
         self.logger = logger
         self.base_url = base_url or config.get('ollama.base_url', 'http://localhost:11434')
     
-    async def generate(self, model: str, prompt: str, system_prompt: Optional[str] = None) -> str:
+    async def generate(self, model: str, prompt: str, system_prompt: Optional[str] = None, *, code_only: bool = False) -> str:
         """
         Generate text using a local Ollama model.
         
@@ -47,6 +47,7 @@ class OllamaClient:
             model (str): Name of the Ollama model to use
             prompt (str): User prompt for text generation
             system_prompt (Optional[str]): Optional system prompt for context
+            code_only (bool): If True, enforce code-only output (no prose/markdown)
             
         Returns:
             str: Generated text response from the model
@@ -55,15 +56,13 @@ class OllamaClient:
             Exception: If model is unavailable or generation fails
         """
         try:
-            # Build messages with enhanced system prompt for code generation
+            # Build messages
             messages = []
-            
-            # Use enhanced system prompt for code generation
-            if not system_prompt:
-                system_prompt = self._get_default_system_prompt()
-            
-            # Enhance system prompt for better code generation
-            enhanced_system_prompt = f"""{system_prompt}
+            base_system_prompt = system_prompt or self._get_default_system_prompt()
+
+            # Optionally enforce code-only behavior
+            if code_only:
+                enhanced_system_prompt = f"""{base_system_prompt}
 
 CRITICAL INSTRUCTIONS:
 - Generate ONLY executable code, no explanations or markdown
@@ -73,8 +72,10 @@ CRITICAL INSTRUCTIONS:
 - Include comments INSIDE the code using proper comment syntax
 - Make code complete and production-ready
 - If generating multiple files, clearly separate them with file headers"""
-
-            messages.append({"role": "system", "content": enhanced_system_prompt})
+                messages.append({"role": "system", "content": enhanced_system_prompt})
+            else:
+                messages.append({"role": "system", "content": base_system_prompt})
+            
             messages.append({"role": "user", "content": prompt})
             
             payload = {
@@ -111,10 +112,10 @@ CRITICAL INSTRUCTIONS:
             raise Exception(f"Failed to generate with Ollama: {e}")
     
     def _get_default_system_prompt(self) -> str:
-        """Get default system prompt for code generation"""
-        return """You are an expert software developer specializing in clean, production-ready code generation. 
-Generate only executable code without any explanatory text, markdown formatting, or documentation outside the code itself.
-Follow best practices and include appropriate comments within the code."""
+        """Get default system prompt for general generation"""
+        return (
+            "You are an expert software developer. Follow the user's instructions carefully and respond clearly."
+        )
     
     def _clean_generated_content(self, content: str) -> str:
         """Clean common issues in generated content"""
