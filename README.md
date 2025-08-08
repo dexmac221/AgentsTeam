@@ -1,12 +1,30 @@
+````markdown
 # AgentsTeam
 
-AgentsTeam is an AI-powered development framework that enables intelligent code generation, project creation, and automated development workflows through CLI interaction. **Now optimized for local Ollama models with gpt-oss support for maximum performance and privacy.**
+AgentsTeam is an AI-powered development fr## 📁 Project Structure
+
+```
+AgentsTeam/
+├── cli/                    # Core CLI interface and shell
+│   ├── core/              # Code generation, model selection, project analysis, error correction
+│   ├── clients/           # AI provider clients (Ollama, OpenAI)
+│   └── utils/             # Configuration and logging utilities
+├── projects/               # Example projects created by AgentsTeam
+│   ├── chats/ollama-web-chat/  # Full-stack chat application
+│   ├── yolo-detector/          # Computer vision object detection system
+│   ├── tetris-game/            # Complete Tetris game implementation
+│   └── gui-calculator/         # Professional GUI calculator with clean architecture
+├── requirements.txt       # Core dependencies
+├── setup.py              # Installation configuration
+└── README.md              # This file
+```les intelligent code generation, project creation, and automated development workflows through CLI interaction. **Now optimized for local Ollama models with gpt-oss support for maximum performance and privacy.**
 
 ## 🚀 Features
 
 - **🎯 gpt-oss Model Integration**: Optimized for the powerful gpt-oss:20b model - GPT-4 level performance locally
 - **🏠 Local-First Approach**: Defaults to Ollama for privacy, speed, and unlimited usage
 - **🧹 Clean Code Generation**: Enhanced prompting system generates pure, executable code without explanatory text
+- **🔧 Intelligent Error Correction**: Advanced AI-powered error detection and fixing system with multi-language support
 - **Intelligent Project Generation**: Create complete, production-ready projects with complex architectures
 - **Interactive AI Shell**: Conversational coding with AI models for real-time development
 - **Multi-Domain Expertise**: Supports web development, computer vision, data analysis, games, and more
@@ -15,9 +33,57 @@ AgentsTeam is an AI-powered development framework that enables intelligent code 
 - **Agent Collaboration**: Multiple AI agents can work together on complex tasks
 - **Multi-Provider Support**: Works with both local Ollama models and OpenAI cloud models
 - **Autonomous Execution**: Set targets and let AI work autonomously with real-time progress tracking
-- **Intelligent Error Correction**: Automatic compilation error detection and fixing with AI assistance
 
-## 📁 Project Structure
+## ⚠️ Code Generation Reliability
+
+**Important Notice**: While AgentsTeam produces high-quality code most of the time, AI code generation can occasionally be inconsistent. Here are some tips for best results:
+
+### 🎯 Best Practices for Reliable Code Generation
+
+1. **Use Specific Prompts**: Be detailed about what you want
+   ```bash
+   # Good
+   agentsteam -p "create a complete tetris game with pygame including all 7 tetromino pieces, rotation, line clearing, scoring, and proper game over handling"
+   
+   # Less reliable  
+   agentsteam -p "make a tetris game"
+   ```
+
+2. **Use Debug Mode**: Always use `--debug` to see what the AI generates
+   ```bash
+   agentsteam -p "your project description" --debug
+   ```
+
+3. **Check Output Quality**: If the generated files are incomplete or truncated:
+   - Try the request again (AI responses can vary)
+   - Use more specific language in your prompt
+   - Break complex requests into smaller parts
+
+4. **Retry on Failure**: Sometimes the AI model may produce incomplete responses due to:
+   - Model context limits
+   - Network issues with Ollama
+   - High model load
+   
+   **Solution**: Simply retry the same command - it often works on the second attempt.
+
+### � Signs of Poor Generation Quality
+
+- Files with only a few characters or incomplete code
+- Missing imports or broken syntax
+- Truncated responses (response cuts off mid-sentence)
+- Mixed content in files (wrong file contents)
+
+### 🛠️ Troubleshooting Tips
+
+```bash
+# If generation fails, try these in order:
+1. Retry the exact same command
+2. Use a more specific prompt with examples
+3. Try the interactive shell for complex projects
+4. Break large projects into smaller components
+```
+
+## �📁 Project Structure````
 
 ```
 AgentsTeam/
@@ -267,49 +333,64 @@ agentsteam shell
 
 ## 🛠️ Intelligent Error Correction
 
-AgentsTeam automatically detects and fixes compilation errors across multiple programming languages and build systems:
+AgentsTeam features a comprehensive error correction system that automatically detects and fixes compilation errors across multiple programming languages and build systems:
 
-### Supported Compilers & Tools
-- **C/C++**: gcc, clang, cc65 (Commodore 64)
-- **Rust**: rustc, cargo
-- **Go**: go build, go test
-- **Java**: javac, maven
-- **TypeScript**: tsc
+### Supported Languages & Compilers
+- **C/C++**: gcc, clang, cc65 (Commodore 64), and other C compilers
+- **Rust**: rustc, cargo build
+- **Go**: go build, go test, go run
+- **Java**: javac, maven, gradle
+- **TypeScript**: tsc, npm build
+- **Python**: syntax errors, import issues, dependency problems
 - **And many more...**
 
-### Auto-Correction Workflow
-1. **Error Detection**: Monitors compilation output for error patterns
-2. **Source Analysis**: Reads and analyzes source code context
-3. **AI-Powered Fixing**: Generates corrected code using advanced AI models
-4. **Automatic Application**: Applies fixes with backup creation
-5. **Retry Compilation**: Automatically retries compilation until success
+### Error Correction Workflow
+1. **Automatic Detection**: Monitors compilation output for error patterns
+2. **Source Analysis**: Reads and analyzes source code context around errors
+3. **AI-Powered Fixing**: Uses advanced AI models to generate corrected code
+4. **Safe Application**: Creates backups and applies fixes automatically
+5. **Retry Compilation**: Continues until compilation succeeds or manual intervention is needed
 
-### Example Error Correction
+### Using the Fix Command
 ```bash
-# Compile broken C code
-\cc65 -t c64 -o build/game.s src/game.c
+# Interactive shell approach
+agentsteam shell
+[AgentsTeam] 🤖 /fix main.c
 
-# Output:
-# ❌ Compilation errors detected:
-# src/game.c(42): Error: ';' expected
-# src/game.c(67): Error: Undefined symbol: 'INVALID_COLOR'
+# Direct CLI approach  
+agentsteam fix main.c --compile "gcc -o app main.c"
 
-# 🤖 AI automatically:
-# 1. Analyzes source code and errors
-# 2. Generates corrected version
-# 3. Creates backup: game.c.backup
-# 4. Applies fixes to game.c
-# 5. Retries compilation
-# ✅ Compilation successful!
+# Fix entire project
+agentsteam fix . --recursive --compile "make"
 ```
 
-### Direct Shell Commands with Error Handling
+### Auto-Correction in Shell Commands
 ```bash
 # Any command starting with \ gets automatic error correction
 \make clean && make        # Auto-fixes build errors
 \gcc -o app main.c        # Auto-fixes C compilation issues  
 \cargo build --release    # Auto-fixes Rust compilation errors
 \npm run build            # Auto-fixes TypeScript/JavaScript issues
+\cc65 -t c64 game.c       # Auto-fixes Commodore 64 assembly issues
+```
+
+### Example Error Correction Session
+```bash
+# Compile broken C code
+\gcc -o game game.c
+
+# Output:
+# ❌ Compilation errors detected:
+# game.c:42: error: expected ';' before 'return'
+# game.c:67: error: 'INVALID_COLOR' undeclared
+
+# 🤖 AI automatically:
+# 1. Analyzes source code and error context
+# 2. Generates corrected version with proper syntax
+# 3. Creates backup: game.c.backup  
+# 4. Applies fixes to game.c
+# 5. Retries compilation
+# ✅ Compilation successful!
 ```
 
 ## 🎯 Usage Examples
@@ -387,7 +468,20 @@ AgentsTeam now defaults to local Ollama models for optimal performance:
 2. Other local coding models (CodeLlama, Qwen2.5-Coder)
 3. Cloud models (if local unavailable)
 
-## 🆕 Recent Improvements (v2.0)
+## 🆕 Recent Improvements (v2.1)
+
+### **🔧 Advanced Error Correction System**
+- ✅ **Multi-Language Support**: Comprehensive error detection for C/C++, Rust, Go, Java, TypeScript, Python
+- ✅ **AI-Powered Fixing**: Uses advanced AI models to understand and fix complex compilation errors
+- ✅ **Safe Operations**: Automatic backup creation before applying fixes
+- ✅ **Shell Integration**: Direct command execution with automatic error correction (`\command`)
+- ✅ **Fix Command**: Dedicated CLI command for targeted error correction
+
+### **🎮 Enhanced Project Examples**
+- ✅ **Tetris Game**: Complete implementation with all tetromino pieces and proper game mechanics
+- ✅ **GUI Calculator**: Professional tkinter calculator with safe AST-based evaluation
+- ✅ **Clean Architecture**: All examples demonstrate production-ready code structure
+- ✅ **Local Generation**: All examples generated using gpt-oss:20b running locally
 
 ### **Enhanced Code Generation**
 - ✅ **Clean Code Output**: Eliminates explanatory text mixed with code
@@ -409,35 +503,32 @@ AgentsTeam now defaults to local Ollama models for optimal performance:
 
 ## 🎯 Example Projects
 
-AgentsTeam demonstrates its capabilities through real project examples, all generated using the gpt-oss:20b model:
+AgentsTeam demonstrates its capabilities through real project examples, all generated using the gpt-oss:20b model running locally via Ollama:
 
-### 1. **System Monitor Dashboard** (`projects/system-monitor/`)
-A comprehensive real-time system monitoring application featuring:
-- **FastAPI backend** with async endpoints
-- **GPU monitoring** via nvidia-smi integration  
-- **CPU, memory, disk, network** monitoring with psutil
-- **WebSocket real-time updates**
-- **Bootstrap 5 responsive dashboard**
-- **Production-ready code** with proper error handling
+### 1. **Tetris Game** (`projects/tetris-game/`)
+A complete implementation of the classic Tetris game showcasing game development:
+- **Pygame implementation** with clean OOP architecture
+- **Complete game mechanics** (tetromino pieces, rotation, line clearing, scoring)
+- **All 7 tetromino shapes** with proper rotation logic
+- **Game state management** (playing, paused, game over)
+- **Professional code structure** with modular design
 
 ```bash
-cd projects/system-monitor
+cd projects/tetris-game
 pip install -r requirements.txt
-python run.py
-# Open http://localhost:8000
+python game.py
 ```
 
-### 2. **Snake Game** (`projects/snake-game/`)
-A complete Python Snake game showcasing game development:
-- **Pygame implementation** with clean OOP design
-- **Complete game mechanics** (collision, scoring, game over)
-- **Keyboard controls** (arrow keys, WASD)
-- **Pause/restart functionality**
-- **Modular code structure** with separate config and utils
+### 2. **GUI Calculator** (`projects/gui-calculator/`)
+A modern calculator application demonstrating clean GUI development:
+- **Tkinter-based interface** with professional styling
+- **Safe expression evaluation** using AST parsing (no dangerous `eval()`)
+- **Comprehensive error handling** for invalid input and division by zero
+- **Modular architecture** separating business logic from UI
+- **Production-ready code** with proper type hints and documentation
 
 ```bash
-cd projects/snake-game  
-pip install -r requirements.txt
+cd projects/gui-calculator/generated/src
 python main.py
 ```
 
@@ -559,9 +650,24 @@ AgentsTeam uses a multi-agent architecture where different AI agents specialize 
 #### 🛠️ Smart Compilation & Error Correction
 | Command | Description | Usage Example |
 |---------|-------------|---------------|
+| `/fix <file>` | Fix compilation errors in specific file | `/fix main.c` |
 | `/compile <cmd>` | Smart compilation with error analysis | `/compile gcc -o app main.c` |
 | `/retry` | Retry last shell command | `/retry` |
 | `\<command>` | Direct shell execution with auto error fixing | `\cc65 -t c64 game.c` |
+
+### Direct CLI Commands
+
+#### Error Correction
+```bash
+# Fix specific file with compilation command
+agentsteam fix main.c --compile "gcc -o app main.c"
+
+# Fix entire project recursively
+agentsteam fix . --recursive --compile "make"
+
+# Fix with custom error patterns
+agentsteam fix app.py --patterns "syntax,import,indent"
+```
 
 ### Natural Language Commands
 

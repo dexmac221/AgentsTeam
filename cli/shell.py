@@ -112,7 +112,6 @@ class AgentsTeamShell:
             '/status': self.slash_status,
             '/server': self.slash_set_ollama_server,
             '/local': self.slash_use_local_ollama,
-            '/clear': self.cmd_clear,
             '/git': self.slash_git_operations,
             '/test': self.slash_run_tests,
             '/install': self.slash_install_deps,
@@ -131,7 +130,7 @@ class AgentsTeamShell:
             '/check': self.slash_check_project,
             '/compile': self.slash_smart_compile,
             '/retry': self.slash_retry_last_command,
-            '/auto': self.slash_autonomous_mode,
+            '/autonomous': self.slash_autonomous_mode,
             '/target': self.slash_set_target,
             '/plan': self.slash_show_plan,
             '/pause': self.slash_pause_execution,
@@ -618,20 +617,31 @@ Please analyze the compilation error and provide specific steps to fix it.
         """Get system prompt for AI"""
         return """You are an expert programming agent in an interactive shell. You can create complete projects with multiple files and directories.
 
-COMMANDS YOU CAN USE:
+FILE CREATION FORMATS (use any of these):
 
-CREATE FILE path/filename.ext
+CREATE FILE filename.ext
 ```language
 # Your code here
 ```
 
+filename.ext:
+```language
+# Your code here
+```
+
+DIRECTORY CREATION FORMATS:
+
 CREATE DIR directory_name
+mkdir directory_name
+
+COMMAND EXECUTION FORMATS:
 
 RUN COMMAND: shell_command_here
+$ shell_command_here
 
 CAPABILITIES:
 ✅ Create multiple files in one response
-✅ Create directory structures (CREATE DIR tests/, CREATE FILE tests/test_main.py)
+✅ Create directory structures (CREATE DIR tests/, tests/test_main.py)
 ✅ Run commands (pip install, python run.py, git init, npm install, etc.)
 ✅ Create entire project structures with proper organization
 ✅ Setup virtual environments, install dependencies
@@ -640,14 +650,15 @@ CAPABILITIES:
 
 EXAMPLES:
 
-User: "Create a FastAPI project with tests"
+User: "Create a FastAPI project"
 You: "I'll create a complete FastAPI project!
 
-CREATE DIR src/
-CREATE DIR tests/
-CREATE DIR docs/
+src/:
+```
+(creates src directory)
+```
 
-CREATE FILE src/main.py
+src/main.py:
 ```python
 from fastapi import FastAPI
 app = FastAPI()
@@ -657,7 +668,7 @@ def read_root():
     return {"Hello": "World"}
 ```
 
-CREATE FILE tests/test_main.py
+tests/test_main.py:
 ```python
 from fastapi.testclient import TestClient
 from src.main import app
@@ -669,15 +680,15 @@ def test_read_root():
     assert response.status_code == 200
 ```
 
-CREATE FILE requirements.txt
+requirements.txt:
 ```
 fastapi
 uvicorn
 pytest
 ```
 
-RUN COMMAND: pip install -r requirements.txt
-RUN COMMAND: pytest tests/
+$ pip install -r requirements.txt
+$ pytest tests/
 "
 
 ALWAYS:
@@ -685,7 +696,8 @@ ALWAYS:
 - Use proper project structure with src/, tests/, docs/ directories
 - Include requirements.txt, .gitignore, README.md
 - Run commands to test and setup the project
-- Be a complete programming assistant"""
+- Be a complete programming assistant
+- Use flexible file creation formats (filename: or CREATE FILE both work)"""
 
     def _analyze_message_complexity(self, message: str) -> str:
         """Analyze message complexity"""
@@ -704,43 +716,157 @@ ALWAYS:
     async def _process_ai_response(self, response: str):
         """Process AI response for commands"""
         lines = response.split('\n')
+        i = 0
         
-        for i, line in enumerate(lines):
-            line = line.strip()
+        while i < len(lines):
+            line = lines[i]
+            line_stripped = line.strip()
+            line_lower = line_stripped.lower()
             
-            # Check for directory creation
-            if line.startswith('CREATE DIR') or line.startswith('CREATE DIRECTORY'):
-                dir_name = line.replace('CREATE DIR', '').replace('CREATE DIRECTORY', '').strip()
-                await self._create_directory(dir_name)
+            # Check for directory creation (more flexible patterns)
+            if any(pattern in line_lower for pattern in ['create dir', 'create directory', 'mkdir']):
+                # Extract directory name
+                for pattern in ['create dir', 'create directory', 'mkdir']:
+                    if pattern in line_lower:
+                        dir_name = line_stripped.lower().replace(pattern, '').strip()
+                        # Remove any trailing colons or quotes
+                        dir_name = dir_name.rstrip(':').strip('"\'')
+                        if dir_name:
+                            await self._create_directory(dir_name)
+                        break
+                i += 1
+                continue
             
-            # Check for file creation
-            elif line.startswith('CREATE FILE'):
-                filename = line.replace('CREATE FILE', '').strip()
+            # Check for file creation (filename: format or other patterns)
+            filename = None
+            
+            # Pattern 1: filename.ext: (at start of line)
+            if (line_stripped.endswith(':') and 
+                any(ext in line_stripped for ext in ['.py', '.js', '.html', '.css', '.md', '.txt', '.json', '.yaml', '.yml']) and
+                not line_stripped.startswith('#') and
+                '://' not in line_stripped):  # Avoid URLs
+                filename = line_stripped.rstrip(':').strip()
+            
+            # Pattern 2: CREATE FILE or similar
+            elif any(pattern in line_lower for pattern in ['create file', 'create:', 'file:']):
+                if 'create file' in line_lower:
+                    filename = line_stripped.lower().replace('create file', '').strip()
+                elif 'file:' in line_lower:
+                    filename = line_stripped.lower().replace('file:', '').strip()
+                filename = filename.rstrip(':').strip('"\'') if filename else None
+            
+            if filename:
+                # Clean filename
+                filename = filename.strip('"\'').strip()
+                
+                # Normalize paths - remove common project prefixes that AI might add
+                path_prefixes_to_remove = ['projects/', 'project/', 'src/', './']
+                for prefix in path_prefixes_to_remove:
+                    if filename.startswith(prefix):
+                        filename = filename[len(prefix):]
+                
+                # Also remove the current project name if it appears in the path
+                if '/' in filename:
+                    parts = filename.split('/')
+                    # If the first part looks like a project name and we have more parts, remove it
+                    if len(parts) > 1 and parts[0] in ['calculator', 'tetris', 'snake', 'app', 'project']:
+                        filename = '/'.join(parts[1:])
                 
                 # Handle files with paths (create directories first)
                 if '/' in filename:
                     dir_path = '/'.join(filename.split('/')[:-1])
                     await self._create_directory(dir_path)
                 
-                # Get code from following lines
-                code_lines = []
+                # Collect file content from following lines
+                content_lines = []
                 j = i + 1
+                in_code_block = False
+                
                 while j < len(lines):
-                    if lines[j].strip().startswith('```'):
-                        j += 1
-                        while j < len(lines) and not lines[j].strip().startswith('```'):
-                            code_lines.append(lines[j])
-                            j += 1
+                    current_line = lines[j]
+                    current_stripped = current_line.strip()
+                    
+                    # Check if we hit another file definition
+                    if (current_stripped.endswith(':') and 
+                        any(ext in current_stripped for ext in ['.py', '.js', '.html', '.css', '.md', '.txt', '.json', '.yaml', '.yml']) and
+                        not current_stripped.startswith('#') and
+                        '://' not in current_stripped):
+                        # This is another file, stop here
                         break
+                    
+                    # Also check for other common section markers that indicate end of file content
+                    if (current_stripped.startswith(('##', '###', 'Run with:', 'Usage:', 'Installation:', 'Requirements:')) or
+                        (current_stripped and current_stripped[0].isupper() and ':' in current_stripped and
+                         any(word in current_stripped.lower() for word in ['gitignore', 'readme']))):
+                        # This looks like a new section, stop here unless we're actually in that file
+                        section_name = current_stripped.lower()
+                        if ('.gitignore' in section_name and filename.lower() != '.gitignore') or \
+                           ('readme' in section_name and not filename.lower().startswith('readme')):
+                            break
+                    
+                    # Handle markdown code blocks
+                    if current_stripped.startswith('```'):
+                        if in_code_block:
+                            # End of code block
+                            break
+                        else:
+                            # Start of code block
+                            in_code_block = True
+                            j += 1
+                            continue
+                    
+                    # If we're in a code block, collect the line
+                    if in_code_block:
+                        content_lines.append(current_line)
+                    # If not in code block, collect lines that look like content
+                    else:
+                        # Skip empty lines at the beginning
+                        if not content_lines and not current_line.strip():
+                            j += 1
+                            continue
+                        
+                        # Stop on obvious section breaks or explanatory text
+                        if (current_stripped.startswith(('##', '###', 'Run with:', 'Usage:', 'The ', 'This ', 'Here')) or
+                            'requirements' in current_stripped.lower() and filename.lower() != 'requirements.txt'):
+                            break
+                        
+                        # Collect the line
+                        content_lines.append(current_line)
+                    
                     j += 1
                 
-                if code_lines:
-                    await self._create_file(filename, '\n'.join(code_lines))
+                # Create the file if we have content
+                if content_lines:
+                    # Clean up the content
+                    content = '\n'.join(content_lines).strip()
+                    if content and len(content) > 5:  # Basic validation
+                        await self._create_file(filename, content)
+                
+                # Move to the line where we stopped
+                i = j
+                continue
             
-            # Check for command execution
-            elif line.startswith('RUN COMMAND:'):
-                command = line.replace('RUN COMMAND:', '').strip()
-                await self._run_command(command)
+            i += 1
+        
+        # Check for command execution in the entire response
+        for line in lines:
+            line_stripped = line.strip()
+            line_lower = line_stripped.lower()
+            
+            if any(pattern in line_lower for pattern in ['run command', 'execute:', 'run:', '$ ']):
+                command = None
+                
+                if 'run command:' in line_lower:
+                    command = line_stripped.replace('RUN COMMAND:', '').replace('run command:', '').strip()
+                elif 'execute:' in line_lower:
+                    command = line_stripped.lower().replace('execute:', '').strip()
+                elif 'run:' in line_lower:
+                    command = line_stripped.lower().replace('run:', '').strip()
+                elif line_stripped.startswith('$ '):
+                    command = line_stripped[2:].strip()
+                
+                if command:
+                    await self._run_command(command)
     
     async def _create_file(self, filename: str, content: str):
         """Create a file with given content"""
@@ -876,7 +1002,7 @@ File Operations:
   - Real-time progress tracking with visible steps
   - Pause/resume/stop controls for user oversight
   - Multi-step execution with automatic error handling
-  - Use /auto "target description" to start
+  - Use /autonomous "target description" to start
 
 AI Conversation:
   Just type what you want to build or ask questions!
@@ -1043,7 +1169,7 @@ Server Management:
   \\CMD           - Direct shell execution (use \\ prefix anywhere)
   
 🚀 Autonomous Execution:
-  /auto TARGET    - Start autonomous execution towards target
+  /autonomous TARGET - Start autonomous execution towards target
   /target [desc]  - Set/show current target
   /plan           - Show execution plan and progress
   /progress       - Show detailed progress information
@@ -1085,7 +1211,7 @@ Information:
   \\make clean && make              # Direct make command
   
   # Autonomous Execution
-  /auto "Create a REST API for a blog system"  # Start autonomous mode
+  /autonomous "Create a REST API for a blog system"  # Start autonomous mode
   /plan                             # Show execution plan
   /pause                            # Pause execution
   /resume                           # Resume execution
@@ -2516,11 +2642,11 @@ Provide a comprehensive analysis covering:
     async def slash_autonomous_mode(self, args):
         """Enter autonomous mode with a target"""
         if not args:
-            print("Usage: /auto <target_description>")
+            print("Usage: /autonomous <target_description>")
             print("Examples:")
-            print("  /auto \"Create a complete REST API for a blog system\"")
-            print("  /auto \"Build and test a Python calculator with GUI\"")
-            print("  /auto \"Set up a React app with authentication and deploy it\"")
+            print("  /autonomous \"Create a complete REST API for a blog system\"")
+            print("  /autonomous \"Build and test a Python calculator with GUI\"")
+            print("  /autonomous \"Set up a React app with authentication and deploy it\"")
             return
         
         target = ' '.join(args)
@@ -2539,13 +2665,13 @@ Provide a comprehensive analysis covering:
         print(f"🎯 Target set: {self.current_target}")
         
         if not self.autonomous_mode:
-            print("💡 Use /auto to start autonomous execution towards this target")
+            print("💡 Use /autonomous to start autonomous execution towards this target")
     
     async def slash_show_plan(self, args):
         """Show the current execution plan"""
         if not self.execution_plan:
             print("❌ No execution plan available.")
-            print("💡 Set a target with /target or /auto to generate a plan")
+            print("💡 Set a target with /target or /autonomous to generate a plan")
             return
         
         print("📋 Execution Plan:")
@@ -2627,7 +2753,7 @@ Provide a comprehensive analysis covering:
         print(f"📊 Completed {self.current_step}/{len(self.execution_plan)} steps")
         
         if self.current_step < len(self.execution_plan):
-            print("💡 You can resume later with /resume or start a new target with /auto")
+            print("💡 You can resume later with /resume or start a new target with /autonomous")
     
     async def _start_autonomous_execution(self, target: str):
         """Start autonomous execution towards a target"""
@@ -3072,7 +3198,7 @@ Should we retry this step, skip it, or modify the plan?
         for i, result in enumerate(self.step_results, 1):
             print(f"  {i}. {result['description']}: {result['summary']}")
         
-        print(f"\n💡 Autonomous execution finished. Use /auto for a new target.")
+        print(f"\n💡 Autonomous execution finished. Use /autonomous for a new target.")
 
 def main():
     """Main shell entry point"""

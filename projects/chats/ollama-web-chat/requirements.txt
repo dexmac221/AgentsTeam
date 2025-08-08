@@ -1,4 +1,0 @@
-fastapi
-uvicorn[standard]
-httpx
-jinja2

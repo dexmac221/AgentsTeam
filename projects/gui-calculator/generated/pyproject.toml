@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tkinter-calculator"
+version = "0.1.0"
+description = "A clean, well-structured calculator with GUI using Python tkinter."
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+{name = "Your Name", email = "you@example.com"}
+]
+keywords = ["calculator", "tkinter", "gui", "python"]
+classifiers = [
+"Programming Language :: Python :: 3",
+"License :: OSI Approved :: MIT License",
+"Operating System :: OS Independent",
+"Topic :: Software Development :: Libraries :: Python Modules",
+"Intended Audience :: End Users/Desktop"
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/yourusername/tkinter-calculator"
+Repository = "https://github.com/yourusername/tkinter-calculator.git"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["calculator*"]
+
+[tool.setuptools.package-data]
+calculator = ["*.py"]
+
+[tool.setuptools.entry-points."console_scripts"]
+calculator = "calculator.main:main"

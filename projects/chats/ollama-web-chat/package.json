@@ -1,4 +1,0 @@
-
-### Step 3: Implement Ollama Integration
-
-Next, let's implement the basic Ollama integration. We'll create a simple API endpoint to interact with the Ollama model.
