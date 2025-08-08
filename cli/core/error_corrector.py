@@ -24,16 +24,18 @@ class ErrorCorrector:
     4. Apply corrections automatically with backups
     """
     
-    def __init__(self, ai_client, logger):
+    def __init__(self, ai_client, logger, model: Optional[str] = None):
         """
         Initialize the error corrector.
         
         Args:
             ai_client: AI client (Ollama or OpenAI) for generating fixes
             logger: Logger instance for debugging and monitoring
+            model: Optional model identifier to use for AI generation
         """
         self.ai_client = ai_client
         self.logger = logger
+        self.model = model
         self.supported_languages = {
             '.py': 'python',
             '.js': 'javascript', 
@@ -307,10 +309,46 @@ class ErrorCorrector:
         suffix = file_path.suffix.lower()
         return self.supported_languages.get(suffix, 'unknown')
     
+    def _extract_fixed_code(self, response: str, language: str) -> Optional[str]:
+        """Robustly extract fixed code from the AI response using multiple strategies."""
+        # 1) Preferred: after FIXED_CODE: fenced block
+        code_match = re.search(r'FIXED_CODE:\s*```(?:\w+)?\s*(.+?)\s*```', response, re.DOTALL)
+        if code_match:
+            return code_match.group(1).strip()
+        
+        # 2) Any fenced code block, pick the largest
+        fences = re.findall(r'```(?:\w+)?\s*(.+?)\s*```', response, re.DOTALL)
+        if fences:
+            # choose the largest block assuming it's the full file
+            return max((b.strip() for b in fences), key=len)
+        
+        # 3) Heuristic: if it looks like code, extract from first code-looking line
+        lines = response.split('\n')
+        code_start = None
+        for i, line in enumerate(lines):
+            s = line.strip()
+            if language == 'python' and (s.startswith('import ') or s.startswith('from ') or s.startswith('def ') or s.startswith('class ') or s.startswith('#!') or s.startswith('"""') or s.startswith('# ')):
+                code_start = i
+                break
+            if any(tok in s for tok in ('{', '}', ';', '(', ')')):
+                code_start = i
+                break
+        if code_start is not None:
+            candidate = '\n'.join(lines[code_start:]).strip()
+            # Trim trailing narrative markers if any
+            tail_markers = ['EXPLANATION:', 'Explanation:', 'Notes:', 'Usage:']
+            for m in tail_markers:
+                idx = candidate.rfind(m)
+                if idx > 0:
+                    candidate = candidate[:idx].strip()
+            return candidate if candidate else None
+        
+        return None
+    
     async def _generate_code_fix(self, file_path: Path, content: str, language: str, error_message: str) -> Dict:
         """Use AI to generate a fix for the code."""
         
-        prompt = f"""You are an expert code debugger and fixer. Please analyze the following {language} code and fix the errors.
+        primary_prompt = f"""You are an expert code debugger and fixer. Please analyze the following {language} code and fix the errors.
 
 FILE: {file_path}
 ERROR MESSAGE:
@@ -336,30 +374,57 @@ FIXED_CODE:
 Make sure the fixed code is complete, syntactically correct, and addresses the specific error mentioned."""
 
         try:
-            response = await self.ai_client.generate(prompt)
+            if not self.model:
+                raise ValueError("AI model not specified for error correction")
             
-            # Extract explanation and fixed code
-            explanation_match = re.search(r'EXPLANATION:\s*(.+?)(?=FIXED_CODE:)', response, re.DOTALL)
-            code_match = re.search(r'FIXED_CODE:\s*```(?:\w+)?\s*(.+?)\s*```', response, re.DOTALL)
+            response = await self.ai_client.generate(
+                model=self.model,
+                prompt=primary_prompt,
+                system_prompt=(
+                    "You are a senior engineer fixing code. First explain the fix briefly, then output the full "
+                    "corrected file inside a single code block."
+                )
+            )
             
-            if not code_match:
-                # Try alternative format
-                code_match = re.search(r'```(?:\w+)?\s*(.+?)\s*```', response, re.DOTALL)
+            # Try robust extraction
+            fixed_code = self._extract_fixed_code(response, language)
+            explanation_match = re.search(r'EXPLANATION:\s*(.+?)(?=FIXED_CODE:|```|$)', response, re.DOTALL)
+            explanation = explanation_match.group(1).strip() if explanation_match else "Applied automatic fix"
             
-            if code_match:
-                fixed_code = code_match.group(1).strip()
-                explanation = explanation_match.group(1).strip() if explanation_match else "Applied automatic fix"
-                
+            if fixed_code:
                 return {
                     'success': True,
                     'fixed_code': fixed_code,
                     'explanation': explanation
                 }
-            else:
+            
+            # Retry with strict instruction to return only a fenced code block
+            retry_prompt = f"""Return ONLY the full corrected content of FILE {file_path} as a single fenced code block.
+No prose, no explanation, no headers. Use exactly this format:
+```{language}
+<full corrected file content>
+```
+Current error to fix: {error_message or 'unknown error'}
+Original content was provided earlier."""
+            retry_resp = await self.ai_client.generate(
+                model=self.model,
+                prompt=retry_prompt,
+                system_prompt=(
+                    "Output ONLY one fenced code block with the complete corrected file. Do not include any text before or after."
+                )
+            )
+            fixed_code = self._extract_fixed_code(retry_resp, language)
+            if fixed_code:
                 return {
-                    'success': False,
-                    'error': 'Could not extract fixed code from AI response'
+                    'success': True,
+                    'fixed_code': fixed_code,
+                    'explanation': explanation
                 }
+            
+            return {
+                'success': False,
+                'error': 'Could not extract fixed code from AI response'
+            }
                 
         except Exception as e:
             return {

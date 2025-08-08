@@ -51,7 +51,11 @@ class ModelSelector:
         """
         self.config = config
         self.logger = logger
-        self.ollama_base_url = config.get('ollama.base_url', 'http://192.168.1.62:11434')
+        # Use localhost by default to avoid surprising remote defaults
+        self.ollama_base_url = config.get('ollama.base_url', 'http://localhost:11434')
+        # Support multiple hosts via env or config (comma-separated)
+        hosts_raw = config.get('ollama.hosts') or self.config.get('OLLAMA_HOSTS') or ''
+        self.ollama_hosts: List[str] = [h.strip() for h in hosts_raw.split(',') if h.strip()] or [self.ollama_base_url]
         self.openai_api_key = config.get('openai.api_key')
     
     async def select_model(self, complexity: str) -> Dict[str, str]:
@@ -93,18 +97,25 @@ class ModelSelector:
             return await self._select_local_model(prefer_large=True) or await self._select_cloud_model('powerful')
     
     async def _select_local_model(self, prefer_large: bool = False) -> Optional[Dict[str, str]]:
-        """Select best available Ollama model"""
+        """Select best available Ollama model, scanning across configured hosts"""
         try:
-            models = await self.get_ollama_models()
-            if not models:
-                self.logger.debug("No Ollama models available")
+            # Scan across all hosts and collect models per host
+            hosts = self.ollama_hosts
+            host_models: List[Tuple[str, List[str]]] = []
+            for host in hosts:
+                models = await self.get_ollama_models(base_url=host)
+                if models:
+                    host_models.append((host, models))
+            
+            if not host_models:
+                self.logger.debug("No Ollama models available on any host")
                 return None
             
-            # Model preference order - prioritize gpt-oss:20b and coding models
+            # Preferred order
             if prefer_large:
                 preferred_order = [
-                    'gpt-oss:20b', 'gpt-oss',  # New preferred high-quality model
-                    'qwen2.5-coder:32b', 'qwen2.5-coder:14b', 'qwen2.5-coder:7b', 
+                    'gpt-oss:20b', 'gpt-oss',
+                    'qwen2.5-coder:32b', 'qwen2.5-coder:14b', 'qwen2.5-coder:7b',
                     'codellama:13b', 'codellama:7b', 'codellama',
                     'llama3.1:70b', 'llama3.1:8b', 'llama3:8b',
                     'gemma2:27b', 'gemma2:9b', 'gemma3n:latest',
@@ -112,33 +123,34 @@ class ModelSelector:
                 ]
             else:
                 preferred_order = [
-                    'gpt-oss:20b', 'gpt-oss',  # New preferred high-quality model
+                    'gpt-oss:20b', 'gpt-oss',
                     'qwen2.5-coder:7b', 'qwen2.5-coder:1.5b', 'qwen2.5-coder',
                     'codellama:7b', 'codellama',
                     'llama3.1:8b', 'llama3:8b', 'gemma2:9b',
                     'gemma3n:latest', 'gemma2:2b'
                 ]
             
-            # Find first available preferred model
+            # Search preferred models across hosts
             for preferred in preferred_order:
-                for available in models:
-                    if preferred.lower() in available.lower():
-                        self.logger.info(f"Selected local model: {available}")
-                        return {
-                            'provider': 'ollama',
-                            'model': available,
-                            'base_url': self.ollama_base_url
-                        }
+                for host, models in host_models:
+                    for available in models:
+                        if preferred.lower() in available.lower():
+                            self.logger.info(f"Selected local model: {available} on {host}")
+                            return {
+                                'provider': 'ollama',
+                                'model': available,
+                                'base_url': host
+                            }
             
-            # Fallback to any available model
+            # Fallback to first available model on first host
+            host, models = host_models[0]
             model = models[0]
-            self.logger.info(f"Selected fallback local model: {model}")
+            self.logger.info(f"Selected fallback local model: {model} on {host}")
             return {
                 'provider': 'ollama',
                 'model': model,
-                'base_url': self.ollama_base_url
+                'base_url': host
             }
-            
         except Exception as e:
             self.logger.error(f"Error selecting local model: {e}")
             return None
@@ -148,13 +160,13 @@ class ModelSelector:
         if not self.openai_api_key:
             raise Exception("OpenAI API key not configured. Run: agentsteam config --openai-key YOUR_KEY")
         
-        # Select model based on performance tier - prioritizing new affordable models
+        # Standardize on widely-available chat models
         if performance_tier == 'fast':
-            model = 'gpt-4.1-nano'  # Ultra-lightweight for simple tasks
+            model = 'gpt-4o-mini'
         elif performance_tier == 'balanced':
-            model = 'gpt-4.1-mini'  # Good balance of cost and quality
+            model = 'gpt-4o-mini'
         else:  # powerful
-            model = 'o4-mini'  # Reasoning-optimized for complex tasks
+            model = 'gpt-4o'
         
         self.logger.info(f"Selected cloud model: {model}")
         return {
@@ -163,39 +175,64 @@ class ModelSelector:
             'api_key': self.openai_api_key
         }
     
-    async def get_ollama_models(self) -> List[str]:
-        """Get list of available Ollama models"""
+    async def get_ollama_models(self, base_url: Optional[str] = None) -> List[str]:
+        """Get list of available Ollama models from a specific base_url or default"""
+        url = (base_url or self.ollama_base_url).rstrip('/')
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(f"{self.ollama_base_url}/api/tags") as response:
+                async with session.get(f"{url}/api/tags") as response:
                     if response.status == 200:
                         data = await response.json()
                         models = [model['name'] for model in data.get('models', [])]
-                        self.logger.debug(f"Found {len(models)} Ollama models")
+                        self.logger.debug(f"Found {len(models)} Ollama models at {url}")
                         return models
                     else:
-                        self.logger.debug(f"Ollama API returned status: {response.status}")
+                        self.logger.debug(f"Ollama API at {url} returned status: {response.status}")
                         return []
         except Exception as e:
-            self.logger.debug(f"Could not connect to Ollama: {e}")
+            self.logger.debug(f"Could not connect to Ollama at {url}: {e}")
             return []
     
     def parse_model_string(self, model_str: str) -> Dict[str, str]:
-        """Parse model string like 'ollama:gemma2' or 'openai:gpt-4'"""
+        """Parse a model string and infer provider when not explicitly provided.
+        
+        Accepted forms:
+        - 'ollama:gemma2:9b'   -> provider=ollama, model='gemma2:9b'
+        - 'openai:gpt-4o'      -> provider=openai, model='gpt-4o'
+        - 'gpt-oss:20b'        -> provider=ollama, model='gpt-oss:20b'
+        - 'qwen2.5-coder:7b'   -> provider=ollama, model='qwen2.5-coder:7b'
+        - 'gpt-4o'             -> provider=openai, model='gpt-4o' (heuristic)
+        """
+        explicit_provider = None
+        explicit_model = None
+        
         if ':' in model_str:
-            provider, model = model_str.split(':', 1)
-        else:
-            # Try to guess provider
-            if model_str.startswith('gpt-') or model_str.startswith('o4-') or 'gpt' in model_str.lower():
-                provider, model = 'openai', model_str
+            first, rest = model_str.split(':', 1)
+            if first.lower() in ('ollama', 'openai'):
+                explicit_provider = first.lower()
+                explicit_model = rest
             else:
-                provider, model = 'ollama', model_str
+                # The colon belongs to the model tag (e.g., 'gpt-oss:20b'), assume Ollama
+                explicit_provider = 'ollama'
+                explicit_model = model_str
+        else:
+            # Heuristic: gpt-* and o4-* are OpenAI; otherwise default to Ollama
+            if model_str.lower().startswith(('gpt-', 'o4-')) or 'gpt' in model_str.lower():
+                explicit_provider = 'openai'
+                explicit_model = model_str
+            else:
+                explicit_provider = 'ollama'
+                explicit_model = model_str
         
-        result = {'provider': provider, 'model': model}
+        result = {'provider': explicit_provider, 'model': explicit_model}
         
-        if provider == 'ollama':
+        if explicit_provider == 'ollama':
+            # If a specific host was provided as a prefix like 'ollama@http://host:11434:model'
+            if '@' in explicit_model and explicit_model.startswith('http') is False:
+                # Not implementing custom parsing now; default to base_url
+                pass
             result['base_url'] = self.ollama_base_url
-        elif provider == 'openai':
+        else:
             if not self.openai_api_key:
                 raise ValueError("OpenAI API key not configured")
             result['api_key'] = self.openai_api_key

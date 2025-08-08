@@ -26,17 +26,18 @@ class OllamaClient:
         base_url (str): Base URL for Ollama API endpoint
     """
     
-    def __init__(self, config, logger: Logger):
+    def __init__(self, config, logger: Logger, base_url: Optional[str] = None):
         """
         Initialize the Ollama client.
         
         Args:
             config: Configuration object containing Ollama settings
             logger (Logger): Logging utility for debugging and monitoring
+            base_url (Optional[str]): Override the Ollama base URL for this client
         """
         self.config = config
         self.logger = logger
-        self.base_url = config.get('ollama.base_url', 'http://localhost:11434')
+        self.base_url = base_url or config.get('ollama.base_url', 'http://localhost:11434')
     
     async def generate(self, model: str, prompt: str, system_prompt: Optional[str] = None) -> str:
         """

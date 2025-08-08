@@ -109,7 +109,9 @@ class CodeGenerator:
             
             # Get appropriate client
             if model_info['provider'] == 'ollama':
-                client = self.ollama_client
+                # Use host-aware client if a specific base_url is selected by the model selector
+                base_url = model_info.get('base_url')
+                client = OllamaClient(self.config, self.logger, base_url=base_url)
             else:
                 client = self.openai_client
             

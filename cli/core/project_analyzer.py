@@ -146,10 +146,10 @@ class ProjectAnalyzer:
         
         # Description length and detail analysis
         word_count = len(description.split())
-        if word_count > 50:
-            score += 10
-        elif word_count > 100:
+        if word_count > 100:
             score += 20
+        elif word_count > 50:
+            score += 10
         
         # Multiple service indicators
         service_indicators = ['service', 'component', 'module', 'layer']

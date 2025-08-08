@@ -67,18 +67,12 @@ class OpenAIClient:
             
             payload = {
                 "model": model,
-                "messages": messages
+                "messages": messages,
+                # Conservative defaults that work across chat/completions models
+                "temperature": 0.1,
+                "top_p": 0.9,
+                "max_tokens": 4000
             }
-            
-            # Configure parameters based on model type
-            if model.startswith('gpt-4.1') or model.startswith('o4-'):
-                # New models have restrictions - use defaults only
-                payload["max_completion_tokens"] = 4000
-            else:
-                # Older models support more parameters
-                payload["temperature"] = 0.1
-                payload["top_p"] = 0.9
-                payload["max_tokens"] = 4000
             
             headers = {
                 "Authorization": f"Bearer {self.api_key}",

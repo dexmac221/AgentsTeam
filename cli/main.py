@@ -54,13 +54,15 @@ Examples:
     # Config command
     config_parser = subparsers.add_parser('config', help='Configure API keys and settings')
     config_parser.add_argument('--openai-key', help='Set OpenAI API key')
+    config_parser.add_argument('--ollama-url', help='Set Ollama base URL (e.g., http://192.168.1.62:11434)')
+    config_parser.add_argument('--ollama-hosts', help='Comma-separated Ollama hosts to scan (e.g., http://192.168.1.62:11434,http://localhost:11434)')
     config_parser.add_argument('--show', action='store_true', help='Show current configuration')
     
     # Fix command (intelligent error correction)
     fix_parser = subparsers.add_parser('fix', help='Automatically fix errors in code')
     fix_parser.add_argument('target', nargs='?', help='File to fix or command to run and fix')
     fix_parser.add_argument('--file', '-f', help='Specific file to analyze and fix')
-    fix_parser.add_argument('--command', '-c', help='Command to run and auto-fix errors')
+    fix_parser.add_argument('--run-command', '-c', dest='run_command', help='Command to run and auto-fix errors')
     fix_parser.add_argument('--error', '-e', help='Specific error message to address')
     fix_parser.add_argument('--max-attempts', type=int, default=3, help='Maximum fix attempts')
     fix_parser.add_argument('--debug', action='store_true', help='Enable debug mode')
@@ -93,10 +95,19 @@ def handle_config(args, config):
         config.set('openai.api_key', args.openai_key)
         print("✅ OpenAI API key configured")
     
+    if args.ollama_url:
+        config.set('ollama.base_url', args.ollama_url)
+        print(f"✅ Ollama base URL set to {args.ollama_url}")
+    
+    if args.ollama_hosts:
+        config.set('ollama.hosts', args.ollama_hosts)
+        print(f"✅ Ollama hosts set to {args.ollama_hosts}")
+    
     if args.show:
         print("\n🔧 Current Configuration:")
         print(f"OpenAI API Key: {'configured' if config.get('openai.api_key') else 'not configured'}")
         print(f"Ollama URL: {config.get('ollama.base_url', 'http://localhost:11434')}")
+        print(f"Ollama Hosts: {config.get('ollama.hosts', '(not set; using Ollama URL)')}")
 
 async def handle_models(config, logger):
     """List available models"""
@@ -104,13 +115,19 @@ async def handle_models(config, logger):
     
     print("\n🤖 Available Models:")
     
-    # Check Ollama models
-    ollama_models = await selector.get_ollama_models()
-    if ollama_models:
-        print("\n📍 Local (Ollama):")
-        for model in ollama_models:
-            print(f"  • {model}")
-    else:
+    # Check Ollama models across configured hosts
+    any_ollama = False
+    for host in selector.ollama_hosts:
+        ollama_models = await selector.get_ollama_models(base_url=host)
+        host_label = host.replace('http://', '').replace('https://', '')
+        if ollama_models:
+            any_ollama = True
+            print(f"\n📍 Local (Ollama) at {host_label}:")
+            for model in ollama_models:
+                print(f"  • {model}")
+        else:
+            print(f"\n⚠️ No models found at Ollama host {host_label}")
+    if not any_ollama:
         print("\n❌ Ollama not available (install: curl -fsSL https://ollama.com/install.sh | sh)")
     
     # Check OpenAI
@@ -184,43 +201,40 @@ async def handle_generate(args, config, logger):
 async def handle_fix(args, config, logger):
     """Handle intelligent error correction"""
     from .core.error_corrector import ErrorCorrector
-    from .core.model_selector import ModelSelector
     from .clients.ollama_client import OllamaClient
     from .clients.openai_client import OpenAIClient
     
     print("🔧 AgentsTeam Intelligent Error Correction")
     
-    # Initialize model selector and get best available model
+    # Initialize model selector and get a solid model for debugging/fixing
     selector = ModelSelector(config, logger)
-    model_info = await selector.get_best_model()
+    try:
+        model_info = await selector.select_model('complex')
+    except Exception as e:
+        print(f"❌ No AI models available. {e}")
+        return
     
     if not model_info:
         print("❌ No AI models available. Please configure Ollama or OpenAI.")
         return
     
-    print(f"🤖 Using model: {model_info['provider']}:{model_info['name']}")
+    print(f"🤖 Using model: {model_info['provider']}:{model_info['model']}")
     
-    # Initialize AI client
+    # Initialize AI client (honor base_url if using Ollama)
     if model_info['provider'] == 'ollama':
-        ai_client = OllamaClient(
-            base_url=config.get('ollama.base_url', 'http://localhost:11434'),
-            logger=logger
-        )
+        ai_client = OllamaClient(config, logger, base_url=model_info.get('base_url'))
     else:
-        ai_client = OpenAIClient(
-            api_key=config.get('openai.api_key'),
-            logger=logger
-        )
+        ai_client = OpenAIClient(config, logger)
     
-    # Initialize error corrector
-    corrector = ErrorCorrector(ai_client, logger)
+    # Initialize error corrector with selected model
+    corrector = ErrorCorrector(ai_client, logger, model=model_info['model'])
     
     try:
         # Determine what to fix
-        if args.command:
+        if args.run_command:
             # Run command and fix errors
-            print(f"🚀 Running command with auto-fix: {args.command}")
-            result = await corrector.run_and_fix(args.command, args.max_attempts)
+            print(f"🚀 Running command with auto-fix: {args.run_command}")
+            result = await corrector.run_and_fix(args.run_command, args.max_attempts)
             
             if result['success']:
                 print(f"✅ Command completed successfully after {result['attempts']} attempt(s)")
@@ -228,10 +242,10 @@ async def handle_fix(args, config, logger):
                     print(f"🔧 Fixed files: {', '.join(result['fixes_applied'])}")
                 print(f"\n📄 Output:\n{result['output']}")
             else:
-                print(f"❌ Command failed: {result['reason']}")
+                print(f"❌ Command failed: {result.get('reason', 'Unknown reason')}")
                 if result.get('fixes_attempted'):
                     print(f"🔧 Attempted fixes on: {', '.join(result['fixes_attempted'])}")
-                print(f"\n📄 Error:\n{result['error']}")
+                print(f"\n📄 Error:\n{result.get('error','')}")
                 
         elif args.file or args.target:
             # Fix specific file
@@ -249,7 +263,7 @@ async def handle_fix(args, config, logger):
                 if args.debug:
                     print(f"\n📄 Fixed code:\n{result['fixed_code']}")
             else:
-                print(f"❌ Could not fix file: {result['error']}")
+                print(f"❌ Could not fix file: {result.get('error','Unknown error')}")
                 
         else:
             print("🔍 Scanning current directory for issues...")
@@ -284,7 +298,7 @@ async def handle_fix(args, config, logger):
                                 print(f"✅ Fixed {py_file}")
                                 print(f"🔧 Changes: {result['changes']}")
                             else:
-                                print(f"❌ Could not fix {py_file}: {result['error']}")
+                                print(f"❌ Could not fix {py_file}: {result.get('error','Unknown error')}")
                         else:
                             print(f"✅ {py_file} looks good")
                             
@@ -294,7 +308,7 @@ async def handle_fix(args, config, logger):
                 print("No Python files found in current directory.")
                 print("\nUsage examples:")
                 print("  agentsteam fix --file main.py")
-                print("  agentsteam fix --command 'python main.py'")
+                print("  agentsteam fix --run-command 'python main.py'")
                 print("  agentsteam fix 'python main.py'")
                 
     except Exception as e:
