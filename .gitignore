@@ -12,3 +12,10 @@ env/
 .idea/
 .DS_Store
 *.log
+
+# Rust artifacts
+*.rmeta
+
+# Temp tests and outputs
+/tmp_tests/
+*.out
