@@ -199,6 +199,26 @@ Example projects included:
 - projects/snake-game
 - projects/system-monitor
 - projects/gui-calculator
+- projects/example-fastapi (generated via gpt-oss:20b local model)
+
+### Generated FastAPI Example (local gpt-oss:20b)
+Command used:
+```bash
+agentsteam generate "Minimal FastAPI API with one /health endpoint" --tech python,fastapi -o projects/example-fastapi
+```
+Key file (`projects/example-fastapi/app.py`):
+```python
+@app.get("/health", response_model=HealthResponse)
+async def health_check() -> HealthResponse:
+    return HealthResponse(status="ok", version=app.version)
+```
+Run it:
+```bash
+cd projects/example-fastapi
+pip install -r requirements.txt
+python main.py  # or: uvicorn app:app --reload
+curl http://127.0.0.1:8000/health
+```
 
 You can run them from their directories; see each subfolder’s README or main file.
 
@@ -228,6 +248,14 @@ AgentsTeam uses modular components:
 
 ## Disclaimer
 AI-generated code may contain bugs or vulnerabilities. Review and test before production use. Ensure license compatibility of dependencies.
+
+Generated projects are starter templates/scaffolds: they aim to give you a structured baseline (files, layout, example code) but are not guaranteed to run end‑to‑end without:
+- Installing and pinning any missing dependencies
+- Filling in TODOs / implementation gaps
+- Adding configuration (env vars, database URLs, credentials)
+- Writing additional tests and hardening security
+
+Always treat outputs as a draft to refine, not production‑ready software.
 
 ## License
 MIT. See LICENSE.

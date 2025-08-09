@@ -1,19 +1,21 @@
+#!/usr/bin/env python3
 """
 Entry point for tiny_cli_datetime.
-Prints the current date and time in a human‑readable format.
+Prints the current date and time in ISO 8601 format (YYYY-MM-DDTHH:MM:SS).
 """
 
 import sys
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import datetime
 
 
 def get_current_datetime() -> datetime:
-    """Return the current date and time as a timezone‑aware datetime object."""
-    return datetime.now(timezone.utc).astimezone()
+    """Return the current local date and time.
+    Note: We intentionally use naive local time to match test expectations.
+    """
+    return datetime.now()
 
 
-def format_datetime(dt: datetime, fmt: str = "%Y-%m-%d %H:%M:%S %Z") -> str:
+def format_datetime(dt: datetime, fmt: str = "%Y-%m-%dT%H:%M:%S") -> str:
     """Format a datetime object into a string using the provided format."""
     return dt.strftime(fmt)
 
@@ -24,6 +26,7 @@ def main() -> None:
         current_dt = get_current_datetime()
         output = format_datetime(current_dt)
         print(output)
+        sys.exit(0)
     except Exception as exc:  # pragma: no cover
         sys.stderr.write(f"Error: {exc}\n")
         sys.exit(1)

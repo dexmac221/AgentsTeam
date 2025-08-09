@@ -7,6 +7,7 @@ __pycache__/
 build/
 dist/
 venv/
+.venv/
 env/
 .vscode/
 .idea/
@@ -19,3 +20,20 @@ env/
 # Temp tests and outputs
 /tmp_tests/
 *.out
+
+# Python tooling & caches
+.mypy_cache/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Environment files
+.env
+.env.*
+
+# Editor/project files
+*.code-workspace
+
+# Backups created by fixer
+**/*.backup.*

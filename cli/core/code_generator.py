@@ -161,13 +161,16 @@ class CodeGenerator:
                 system_prompt="You are an expert software architect. Respond with well-structured JSON only."
             )
         
+        # Parse project plan and validate
+        plan = None
         try:
-            # Parse project plan
             plan = json.loads(self._extract_json_from_response(plan_response))
             self.logger.debug(f"Project plan: {json.dumps(plan, indent=2)}")
-        except:
-            # Fallback to simple structure
-            plan = self._create_fallback_plan(description, technologies)
+        except Exception as e:
+            self.logger.info(f"Plan parsing failed, using fallback: {e}")
+            plan = None
+        
+        plan = self._validate_or_fallback_plan(plan, description, technologies)
         
         # Generate each file
         files_created = 0
@@ -197,10 +200,11 @@ class CodeGenerator:
                     system_prompt="You are an expert programmer. Generate clean, production-ready code with comments."
                 )
             
-            # Extract and save code
-            # Prefer language by extension, not the plan-provided type
+            # Extract and save code; ensure non-empty content
             inferred_language = self._get_language_from_extension(Path(file_info['path']).suffix)
-            file_content = self._extract_code_from_response(content_response, inferred_language.lower())
+            file_content = (self._extract_code_from_response(content_response, inferred_language.lower()) or "").strip()
+            if not file_content:
+                file_content = self._default_content_for(file_info['path'], description, inferred_language)
             
             with open(file_path, 'w', encoding='utf-8') as f:
                 f.write(file_content)
@@ -239,6 +243,41 @@ class CodeGenerator:
             'plan': plan
         }
 
+    def _validate_or_fallback_plan(self, plan: Dict[str, Any] | None, description: str, technologies: List[str]) -> Dict[str, Any]:
+        """Validate plan structure; fallback to a minimal plan if invalid or empty."""
+        try:
+            files = plan.get('files') if isinstance(plan, dict) else None
+            if isinstance(files, list) and len(files) > 0 and all('path' in f for f in files):
+                return plan  # looks good
+        except Exception:
+            pass
+        # Fallback plan
+        self.logger.info("Using fallback plan with README.md, requirements.txt, and main.py")
+        return self._create_fallback_plan(description, technologies)
+
+    def _default_content_for(self, relative_path: str, description: str, language: str) -> str:
+        """Provide sensible default content for a file when the model returns empty content."""
+        path = Path(relative_path)
+        ext = path.suffix.lower()
+        name = path.name.lower()
+        
+        if ext == '.py':
+            return (
+                "#!/usr/bin/env python3\n"
+                "def main():\n"
+                "    print(\"Hello, AgentsTeam!\")\n\n"
+                "if __name__ == \"__main__\":\n"
+                "    main()\n"
+            )
+        if name == 'readme.md' or ext == '.md':
+            return f"# Generated Project\n\n{description}\n\n## Run\n\n```bash\npython main.py\n```\n"
+        if name == 'requirements.txt' or ext == '.txt':
+            return ""
+        if ext == '.json':
+            return "{}\n"
+        # Generic text fallback
+        return f"// File: {relative_path}\n// Part of generated project for: {description}\n"
+    
     def _build_project_prompt(self, description: str, technologies: List[str]) -> str:
         """Build comprehensive project prompt"""
         tech_str = ', '.join(technologies) if technologies else 'appropriate technologies'

@@ -1,0 +1,15 @@
+# requirements.txt
+# This file lists the Python dependencies required for the Hello World CLI project.
+# Each line specifies a package and an optional version constraint.
+# Comments start with '#' and are ignored by pip.
+
+# Core CLI framework
+click==8.1.7
+
+# Optional: Rich text formatting for enhanced output (not strictly required)
+rich==13.7.1
+
+# If you need environment variable support, uncomment the following line:
+# python-dotenv==1.0.1
+
+# Development dependencies (for testing, linting, etc.) can be added to a separate dev-requirements.txt file.

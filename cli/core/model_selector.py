@@ -51,10 +51,9 @@ class ModelSelector:
         """
         self.config = config
         self.logger = logger
-        # Use localhost by default to avoid surprising remote defaults
         self.ollama_base_url = config.get('ollama.base_url', 'http://localhost:11434')
-        # Support multiple hosts via env or config (comma-separated)
-        hosts_raw = config.get('ollama.hosts') or self.config.get('OLLAMA_HOSTS') or ''
+        # Config.get already checks environment variables; no need to duplicate
+        hosts_raw = config.get('ollama.hosts', '')
         self.ollama_hosts: List[str] = [h.strip() for h in hosts_raw.split(',') if h.strip()] or [self.ollama_base_url]
         self.openai_api_key = config.get('openai.api_key')
     
@@ -200,12 +199,14 @@ class ModelSelector:
         - 'ollama:gemma2:9b'   -> provider=ollama, model='gemma2:9b'
         - 'openai:gpt-4o'      -> provider=openai, model='gpt-4o'
         - 'gpt-oss:20b'        -> provider=ollama, model='gpt-oss:20b'
+        - 'gpt-oss'            -> provider=ollama, model='gpt-oss'
         - 'qwen2.5-coder:7b'   -> provider=ollama, model='qwen2.5-coder:7b'
         - 'gpt-4o'             -> provider=openai, model='gpt-4o' (heuristic)
         """
+        model_lower = model_str.lower()
         explicit_provider = None
         explicit_model = None
-        
+
         if ':' in model_str:
             first, rest = model_str.split(':', 1)
             if first.lower() in ('ollama', 'openai'):
@@ -216,25 +217,25 @@ class ModelSelector:
                 explicit_provider = 'ollama'
                 explicit_model = model_str
         else:
-            # Heuristic: gpt-* and o4-* are OpenAI; otherwise default to Ollama
-            if model_str.lower().startswith(('gpt-', 'o4-')) or 'gpt' in model_str.lower():
+            # Special-case known local model families
+            if model_lower.startswith(('gpt-oss', 'qwen', 'codellama', 'llama', 'gemma')):
+                explicit_provider = 'ollama'
+                explicit_model = model_str
+            # Heuristic: gpt-* and o4-* are OpenAI; keep after local exceptions
+            elif model_lower.startswith(('gpt-', 'o4-')):
                 explicit_provider = 'openai'
                 explicit_model = model_str
             else:
                 explicit_provider = 'ollama'
                 explicit_model = model_str
-        
+
         result = {'provider': explicit_provider, 'model': explicit_model}
-        
+
         if explicit_provider == 'ollama':
-            # If a specific host was provided as a prefix like 'ollama@http://host:11434:model'
-            if '@' in explicit_model and explicit_model.startswith('http') is False:
-                # Not implementing custom parsing now; default to base_url
-                pass
             result['base_url'] = self.ollama_base_url
         else:
             if not self.openai_api_key:
                 raise ValueError("OpenAI API key not configured")
             result['api_key'] = self.openai_api_key
-        
+
         return result

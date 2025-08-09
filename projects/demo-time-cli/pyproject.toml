@@ -3,7 +3,7 @@ requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
-name = "tinycli"
+name = "tiny-cli-datetime"
 version = "0.1.0"
 description = "A tiny Python CLI that prints the current date/time and exits."
 authors = ["Your Name <you@example.com>"]
@@ -12,17 +12,16 @@ readme = "README.md"
 homepage = "https://github.com/yourusername/tinycli"
 repository = "https://github.com/yourusername/tinycli"
 keywords = ["cli", "datetime", "tiny"]
+packages = [{ include = "tiny_cli_datetime", from = "src" }]
 
 [tool.poetry.dependencies]
-python = "^3.9"
+python = ">=3.8,<4.0"
 
-[tool.poetry.extras]
-
-[tool.poetry.dev-dependencies]
+[tool.poetry.group.dev.dependencies]
 pytest = "^7.0"
 
 [tool.poetry.scripts]
-tinycli = "src.tinycli:main"
+tiny-date = "tiny_cli_datetime.main:main"
 
 [tool.poetry.urls]
 Documentation = "https://github.com/yourusername/tinycli#readme"
