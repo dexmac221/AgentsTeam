@@ -244,13 +244,13 @@ Implemented:
 - State persistence (.agentsteam_state.json)
 - Resume from persisted state (`--resume` to skip completed steps)
 - Stagnation reflection recovery (auto micro-step rewrite after repeated no-change cycles)
+- Large diff guard with reduction request (oversize change shrink request)
+- Automatic Python dependency detection & requirements.txt updates
 
 Planned / Not Yet Implemented:
 - Rich pytest failure parsing (structured assertion / failing test extraction fed back to model)
 - More targeted multi-file fix reasoning (parsing stack traces to pick precise files)
 - Assertion-aware expectation handling (map expected substring to output structure)
-- Large diff guard / size budgeting
-- Dependency installation / virtualenv management steps execution (currently only planned text)
 - README auto-update of generated project with progress log
 
 ---

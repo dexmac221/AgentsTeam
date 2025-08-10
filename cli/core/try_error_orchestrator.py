@@ -24,6 +24,10 @@ class TryErrorOrchestrator:
         self.state_file = None
         # New: allow multiple adaptive fix attempts
         self.max_fix_attempts = 3
+        # New: patch size budget (characters) for modified existing files
+        self.max_change_chars = 6000
+        # Track last detected dependencies to avoid redundant writes
+        self._last_deps = set()
 
     async def plan_steps(self, description: str, technologies: List[str], max_steps: int = 10) -> List[str]:
         """Ask LLM for incremental plan steps (smallest -> more complex)."""
@@ -162,7 +166,18 @@ Return one step per line.
                         continue
                     dest = output_dir / rel
                     dest.parent.mkdir(parents=True, exist_ok=True)
-                    old = dest.read_text(encoding='utf-8') if dest.exists() else ''
+                    old_exists = dest.exists()
+                    old = dest.read_text(encoding='utf-8') if old_exists else ''
+                    # Large diff guard: if modifying existing file and change exceeds budget, request smaller patch
+                    if old_exists and len(code) > self.max_change_chars:
+                        print(f"⚠️ Proposed change for {rel} is {len(code)} chars (> {self.max_change_chars}). Requesting smaller focused patch.")
+                        reduced = await self._request_smaller_patch(rel, old, description, step, expect)
+                        if reduced:
+                            code = reduced
+                            print(f"✅ Received reduced patch for {rel} ({len(code)} chars)")
+                        else:
+                            print(f"⛔ Skipping oversized modification for {rel}; will revisit in later step.")
+                            continue
                     # If modifying main.py to support positional name argument automatically add logic
                     if rel == 'main.py' and '--name' in code and 'print(' not in code:
                         # Ensure greeting print exists
@@ -232,6 +247,16 @@ Return one step per line.
                     print(f"❌ Expected substring '{expect}' not found in stdout -> treat as failure")
                     success = False
             if success:
+                # After a successful run, attempt dependency detection/update
+                try:
+                    new_deps = self._detect_python_dependencies(output_dir)
+                    added = new_deps - self._last_deps
+                    if added:
+                        self._update_requirements(output_dir, added)
+                        self._last_deps |= added
+                        print(f"📦 Detected new dependencies: {', '.join(sorted(added))}")
+                except Exception as e:
+                    print(f"⚠️ Dependency detection failed: {e}")
                 last_diffs = []  # clear diffs after successful run to focus next step
                 continue  # proceed to next step
 
@@ -433,3 +458,61 @@ JSON only.
         elif stdout.strip():
             parts.append('Last stdout tail:\n' + stdout.strip()[-400:])
         return '\n'.join(parts) or '(no prior run context)'
+
+    async def _request_smaller_patch(self, path: str, old_content: str, description: str, step: str, expect: Optional[str]) -> Optional[str]:
+        """Ask model for a reduced-size focused patch for an oversized change."""
+        prompt = f"""You proposed an update exceeding size budget for file {path} while building project: {description}. Current step: {step}. Provide a SINGLE JSON array with one element containing a minimal coherent updated FULL file content for {path} strictly under {self.max_change_chars} characters that advances only this step. If expectation substring {expect or '(none)'} is relevant, ensure output still supports it. Respond JSON only."""
+        try:
+            raw = await self.ai_client.generate(self.model, prompt)
+            fc = self._parse_file_changes(raw)
+            if fc and fc[0]['path'] == path and len(fc[0]['code']) <= self.max_change_chars:
+                return fc[0]['code']
+        except Exception:
+            return None
+        return None
+
+    def _detect_python_dependencies(self, root: Path) -> set:
+        """Very simple import scanner to collect top-level third-party modules."""
+        import sys, re
+        stdlib = set(getattr(sys, 'stdlib_module_names', set()))
+        local_modules = {p.stem for p in root.glob('*.py')}
+        deps = set()
+        pattern = re.compile(r'^(?:from|import)\s+([a-zA-Z0-9_]+)')
+        for py in root.rglob('*.py'):
+            if py.stat().st_size > 30000:  # skip huge files
+                continue
+            try:
+                for line in py.read_text(encoding='utf-8', errors='ignore').splitlines():
+                    m = pattern.match(line.strip())
+                    if m:
+                        mod = m.group(1)
+                        if mod in local_modules or mod in stdlib:
+                            continue
+                        # Ignore obvious builtins
+                        if mod in ('typing','pathlib','json','time','asyncio','sys','os','re','subprocess','dataclasses'):
+                            continue
+                        deps.add(mod.lower())
+            except Exception:
+                continue
+        return deps
+
+    def _update_requirements(self, root: Path, new_deps: set):
+        req = root / 'requirements.txt'
+        existing = []
+        found = set()
+        if req.exists():
+            try:
+                for line in req.read_text(encoding='utf-8').splitlines():
+                    name = line.split('==')[0].split('>=')[0].strip().lower()
+                    if name:
+                        found.add(name)
+                    existing.append(line)
+            except Exception:
+                pass
+        for dep in sorted(new_deps):
+            if dep not in found:
+                existing.append(f"{dep}>=0.0.0")
+        try:
+            req.write_text('\n'.join(existing).rstrip() + '\n', encoding='utf-8')
+        except Exception as e:
+            print(f"⚠️ Could not update requirements.txt: {e}")
