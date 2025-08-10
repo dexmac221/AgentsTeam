@@ -72,6 +72,7 @@ Examples:
     try_parser.set_defaults(rollback=True)
     try_parser.add_argument('--no-negative-memory', dest='negative_memory', action='store_false', help='Disable negative memory (allow repeating failed patches)')
     try_parser.set_defaults(negative_memory=True)
+    try_parser.add_argument('--candidates', type=int, default=1, help='Number of alternative candidate patch sets to explore per step (branching)')
     
     # List models command
     list_parser = subparsers.add_parser('models', help='List available models')
@@ -255,6 +256,7 @@ async def handle_try_error(args, config, logger):
 
     orchestrator = TryErrorOrchestrator(ai_client, logger, model=model_info['model'])
     orchestrator.max_fix_attempts = args.fix_attempts
+    orchestrator.num_candidates = max(1, args.candidates)
     technologies = args.tech.split(',') if args.tech else []
 
     if args.plan_only:
