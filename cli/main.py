@@ -55,7 +55,9 @@ Examples:
     try_parser.add_argument('--model', help='Force specific model (ollama:..., openai:...)')
     try_parser.add_argument('--output', '-o', help='Output directory', default='./generated_try')
     try_parser.add_argument('--run-cmd', help='Run command executed each iteration (auto-infer if omitted)')
-    try_parser.add_argument('--max-steps', type=int, default=10, help='Maximum incremental build steps')
+    try_parser.add_argument('--max-steps', type=int, default=10, help='Maximum incremental build steps (global cap)')
+    try_parser.add_argument('--epics', type=int, default=0, help='Number of high-level epics to decompose before generating steps (0=disabled)')
+    try_parser.add_argument('--epic-steps', type=int, default=0, help='Max steps per epic (0=auto distribute)')
     try_parser.add_argument('--expect', help='Expected substring in stdout or HTTP probe response (treat absence as error)')
     try_parser.add_argument('--probe', help='HTTP probe spec path[:contains=TEXT] for server apps (e.g. /health:contains=ok)')
     try_parser.add_argument('--plan-only', action='store_true', help='Only produce and print the incremental plan (no execution)')
@@ -251,7 +253,7 @@ async def handle_try_error(args, config, logger):
     technologies = args.tech.split(',') if args.tech else []
 
     if args.plan_only:
-        steps = await orchestrator.plan_steps(args.description, technologies, args.max_steps)
+        steps = await orchestrator.plan_steps(args.description, technologies, args.max_steps) if args.epics == 0 else await orchestrator.plan_hierarchical(args.description, technologies, args.epics, args.epic_steps, args.max_steps)
         print("🗂️ Plan steps:")
         for i, s in enumerate(steps, 1):
             print(f"  {i}. {s}")
@@ -267,7 +269,9 @@ async def handle_try_error(args, config, logger):
         expect=args.expect,
         dynamic_run=args.dynamic_run,
         resume=args.resume,
-        probe=args.probe
+        probe=args.probe,
+        epics=args.epics,
+        epic_steps=args.epic_steps
     )
     
 async def handle_fix(args, config, logger):

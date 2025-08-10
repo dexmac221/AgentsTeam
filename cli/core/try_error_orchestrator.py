@@ -69,7 +69,49 @@ Return one step per line.
             ]
             return fallback[:max_steps]
 
-    async def run(self, description: str, technologies: List[str], output_dir: Path, run_cmd: Optional[str], max_steps: int, expect: Optional[str] = None, dynamic_run: bool = True, resume: bool = False, probe: Optional[str] = None):
+    async def plan_hierarchical(self, description: str, technologies: List[str], num_epics: int, epic_steps: int, max_steps: int) -> List[str]:
+        """Produce a hierarchical plan (epics -> steps) flattened into ordered step list.
+        Epics are high-level themes; each expanded into micro-steps using existing plan_steps logic.
+        """
+        if num_epics <= 0:
+            return await self.plan_steps(description, technologies, max_steps)
+        epic_prompt = f"""Decompose the project goal into {num_epics} distinct high-level EPICS (themes / major capabilities).
+Project goal: {description}
+Technologies: {', '.join(technologies) if technologies else 'unspecified'}
+Return ONLY epic names, one per line, 3-8 words each, no numbering."""
+        try:
+            resp = await self.ai_client.generate(self.model, epic_prompt)
+            raw_epics = [l.strip(' -') for l in resp.splitlines() if l.strip()]
+        except Exception as e:
+            self.logger.warning(f"Epic planning failed: {e}; falling back to flat plan.")
+            return await self.plan_steps(description, technologies, max_steps)
+        epics = []
+        for e in raw_epics:
+            if 2 <= len(e.split()) <= 12:
+                key = e.lower()
+                if key not in [x.lower() for x in epics]:
+                    epics.append(e)
+            if len(epics) >= num_epics:
+                break
+        if not epics:
+            return await self.plan_steps(description, technologies, max_steps)
+        remaining = max_steps
+        per_epic = epic_steps if epic_steps > 0 else max(1, remaining // len(epics))
+        flat_steps: List[str] = []
+        for epic in epics:
+            if len(flat_steps) >= max_steps:
+                break
+            sub_cap = min(per_epic, max_steps - len(flat_steps))
+            sub_desc = f"{description} (Focus epic: {epic})"
+            sub_steps = await self.plan_steps(sub_desc, technologies, sub_cap)
+            # Prefix or annotate epic context minimally
+            for s in sub_steps:
+                flat_steps.append(s if epic.lower() in s.lower() else f"[{epic}] {s}")
+                if len(flat_steps) >= max_steps:
+                    break
+        return flat_steps[:max_steps]
+
+    async def run(self, description: str, technologies: List[str], output_dir: Path, run_cmd: Optional[str], max_steps: int, expect: Optional[str] = None, dynamic_run: bool = True, resume: bool = False, probe: Optional[str] = None, epics: int = 0, epic_steps: int = 0):
         start_time = time.time()
         output_dir.mkdir(parents=True, exist_ok=True)
         self.state_file = output_dir / '.agentsteam_state.json'
@@ -89,8 +131,12 @@ Return one step per line.
             steps = previous_state['steps'][:max_steps]  # respect new max_steps cap
             print(f"🗂️ Reusing stored plan steps ({len(steps)})")
         else:
-            steps = await self.plan_steps(description, technologies, max_steps)
-            print(f"🗂️ Plan steps ({len(steps)}):")
+            if epics > 0:
+                steps = await self.plan_hierarchical(description, technologies, epics, epic_steps, max_steps)
+                print(f"🗂️ Hierarchical plan (epics={epics}) produced {len(steps)} steps:")
+            else:
+                steps = await self.plan_steps(description, technologies, max_steps)
+                print(f"🗂️ Plan steps ({len(steps)}):")
             for i, s in enumerate(steps, 1):
                 print(f"  {i}. {s}")
 
