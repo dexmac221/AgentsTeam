@@ -242,9 +242,9 @@ Implemented:
 - ImportError heuristic stub injection for simple missing greeting function
 - Path safety (prevent writes outside target project)
 - State persistence (.agentsteam_state.json)
+- Resume from persisted state (`--resume` to skip completed steps)
 
 Planned / Not Yet Implemented:
-- Resume from persisted state (continue after interruption)
 - Rich pytest failure parsing (structured assertion / failing test extraction fed back to model)
 - More targeted multi-file fix reasoning (parsing stack traces to pick precise files)
 - Smarter pytest switch (require both test and target module existence; delay premature failing tests)

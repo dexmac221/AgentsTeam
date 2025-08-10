@@ -56,31 +56,68 @@ Return one step per line.
             ]
             return fallback[:max_steps]
 
-    async def run(self, description: str, technologies: List[str], output_dir: Path, run_cmd: Optional[str], max_steps: int, expect: Optional[str] = None, dynamic_run: bool = True):
+    async def run(self, description: str, technologies: List[str], output_dir: Path, run_cmd: Optional[str], max_steps: int, expect: Optional[str] = None, dynamic_run: bool = True, resume: bool = False):
         start_time = time.time()
         output_dir.mkdir(parents=True, exist_ok=True)
         self.state_file = output_dir / '.agentsteam_state.json'
 
-        steps = await self.plan_steps(description, technologies, max_steps)
-        print(f"🗂️ Plan steps ({len(steps)}):")
-        for i, s in enumerate(steps, 1):
-            print(f"  {i}. {s}")
+        # Resume handling: load previous state if requested
+        previous_state = None
+        if resume and self.state_file.exists():
+            try:
+                previous_state = json.loads(self.state_file.read_text(encoding='utf-8'))
+                print(f"🔁 Resume requested: loaded previous state (step_index={previous_state.get('step_index')}, success={previous_state.get('success')})")
+            except Exception as e:
+                print(f"⚠️ Could not load previous state: {e}")
+                previous_state = None
 
-        # Minimal scaffold if empty
-        if not any(output_dir.iterdir()):
+        # If resuming and steps stored, reuse them; else plan new steps
+        if previous_state and previous_state.get('steps'):
+            steps = previous_state['steps'][:max_steps]  # respect new max_steps cap
+            print(f"🗂️ Reusing stored plan steps ({len(steps)})")
+        else:
+            steps = await self.plan_steps(description, technologies, max_steps)
+            print(f"🗂️ Plan steps ({len(steps)}):")
+            for i, s in enumerate(steps, 1):
+                print(f"  {i}. {s}")
+
+        # Determine starting index for loop
+        start_step_idx = 1
+        if previous_state:
+            last_index = int(previous_state.get('step_index', 0))
+            last_success = bool(previous_state.get('success', False))
+            # If last step failed, redo it; if succeeded, move to next
+            start_step_idx = last_index if not last_success else last_index + 1
+            if start_step_idx > len(steps):
+                print("✅ All planned steps already completed (nothing to resume)")
+                return {"success": True, "steps": steps, "time": 0.0, "resumed": True}
+            print(f"🔂 Resuming at step {start_step_idx}/{len(steps)}")
+
+        # Minimal scaffold only if not resuming and directory empty
+        if not previous_state and not any(output_dir.iterdir()):
             self._write_minimal_scaffold(output_dir, description)
             print("🧱 Created minimal scaffold: main.py")
 
         if not run_cmd:
-            run_cmd = self._infer_run_command(output_dir)
-            print(f"🏃 Inferred run command: {run_cmd}")
+            # Use previous run_cmd if available
+            if previous_state and previous_state.get('run_cmd'):
+                run_cmd = previous_state['run_cmd']
+                print(f"🏃 Resuming with previous run command: {run_cmd}")
+            else:
+                run_cmd = self._infer_run_command(output_dir)
+                print(f"🏃 Inferred run command: {run_cmd}")
         else:
             print(f"🏃 Using provided run command: {run_cmd}")
 
         stagnation_count = 0
         file_snapshots: Dict[str, str] = self._snapshot_files(output_dir)
-        last_stdout = ""; last_stderr = ""; last_diffs: List[str] = []; last_applied = []
+        last_stdout = previous_state.get('stdout_tail', '') if previous_state else ''
+        last_stderr = previous_state.get('stderr_tail', '') if previous_state else ''
+        last_diffs: List[str] = []
+        last_applied = []
         for idx, step in enumerate(steps, 1):
+            if idx < start_step_idx:
+                continue  # skip completed steps
             print(f"\n➤ Step {idx}/{len(steps)}: {step}")
             if step.lower().startswith('create minimal') and idx > 1:
                 print("(Skipping redundant minimal scaffold step)")
@@ -169,7 +206,7 @@ Return one step per line.
                             print('⚠️ Retry still failing; continuing to fix logic')
                 except Exception as e:
                     print(f'⚠️ Could not create stub: {e}')
-            self._persist_state(idx, step, success, stdout, stderr, output_dir)
+            self._persist_state(idx, step, success, stdout, stderr, output_dir, steps, run_cmd)
             if success:
                 print("✅ Run succeeded")
                 if expect and expect not in stdout and not run_cmd.startswith('pytest'):
@@ -329,14 +366,16 @@ JSON only.
             self.logger.warning(f"Fix attempt failed: {e}")
             return False
 
-    def _persist_state(self, step_index: int, step: str, success: bool, stdout: str, stderr: str, root: Path):
+    def _persist_state(self, step_index: int, step: str, success: bool, stdout: str, stderr: str, root: Path, steps: Optional[List[str]] = None, run_cmd: Optional[str] = None):
         state = {
             'step_index': step_index,
             'step': step,
             'success': success,
             'stdout_tail': stdout[-1000:],
             'stderr_tail': stderr[-2000:],
-            'timestamp': time.time()
+            'timestamp': time.time(),
+            'steps': steps,
+            'run_cmd': run_cmd
         }
         try:
             with open(self.state_file, 'w', encoding='utf-8') as f:

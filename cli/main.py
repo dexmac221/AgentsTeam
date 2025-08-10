@@ -48,6 +48,22 @@ Examples:
     gen_parser.add_argument('--output', '-o', help='Output directory', default='./generated')
     gen_parser.add_argument('--complexity', choices=['simple', 'medium', 'complex'], help='Force complexity level')
     
+    # Try-error incremental build command
+    try_parser = subparsers.add_parser('try-error', help='Incremental try/error guided project build')
+    try_parser.add_argument('description', help='Project description / goal')
+    try_parser.add_argument('--tech', help='Technologies (comma-separated)', default='')
+    try_parser.add_argument('--model', help='Force specific model (ollama:..., openai:...)')
+    try_parser.add_argument('--output', '-o', help='Output directory', default='./generated_try')
+    try_parser.add_argument('--run-cmd', help='Run command executed each iteration (auto-infer if omitted)')
+    try_parser.add_argument('--max-steps', type=int, default=10, help='Maximum incremental build steps')
+    try_parser.add_argument('--expect', help='Expected substring in stdout (treat absence as error)')
+    try_parser.add_argument('--plan-only', action='store_true', help='Only produce and print the incremental plan (no execution)')
+    try_parser.add_argument('--dynamic-run', dest='dynamic_run', action='store_true', help='Dynamically re-infer run command when project gains tests')
+    try_parser.add_argument('--no-dynamic-run', dest='dynamic_run', action='store_false', help='Disable dynamic run command switching')
+    try_parser.set_defaults(dynamic_run=True)
+    try_parser.add_argument('--debug', action='store_true', help='Verbose debug output')
+    try_parser.add_argument('--resume', action='store_true', help='Resume from previous state in output directory if available')
+    
     # List models command
     list_parser = subparsers.add_parser('models', help='List available models')
     
@@ -86,6 +102,8 @@ Examples:
         asyncio.run(handle_models(config, logger))
     elif args.command == 'generate':
         asyncio.run(handle_generate(args, config, logger))
+    elif args.command == 'try-error':
+        asyncio.run(handle_try_error(args, config, logger))
     elif args.command == 'fix':
         asyncio.run(handle_fix(args, config, logger))
 
@@ -197,6 +215,57 @@ async def handle_generate(args, config, logger):
         print(f"❌ Error: {e}")
         sys.exit(1)
 
+async def handle_try_error(args, config, logger):
+    """Handle incremental try-error build using orchestrator."""
+    print(f"🧪 Try/Error Incremental Build: {args.description}")
+    from .core.model_selector import ModelSelector
+    from .core.project_analyzer import ProjectAnalyzer
+    from .core.try_error_orchestrator import TryErrorOrchestrator
+    from .clients.ollama_client import OllamaClient
+    from .clients.openai_client import OpenAIClient
+
+    selector = ModelSelector(config, logger)
+    analyzer = ProjectAnalyzer(logger)
+
+    # Select model
+    if args.model:
+        model_info = selector.parse_model_string(args.model)
+        print(f"🎯 Using forced model: {model_info['provider']}:{model_info['model']}")
+    else:
+        complexity = analyzer.analyze_complexity(args.description, args.tech.split(',') if args.tech else [])
+        model_info = await selector.select_model(complexity)
+        print(f"🤖 Selected model: {model_info['provider']}:{model_info['model']}")
+
+    # Init AI client
+    if model_info['provider'] == 'ollama':
+        from .clients.ollama_client import OllamaClient as OC
+        ai_client = OC(config, logger, base_url=model_info.get('base_url'))
+    else:
+        from .clients.openai_client import OpenAIClient as OPC
+        ai_client = OPC(config, logger)
+
+    orchestrator = TryErrorOrchestrator(ai_client, logger, model=model_info['model'])
+    technologies = args.tech.split(',') if args.tech else []
+
+    if args.plan_only:
+        steps = await orchestrator.plan_steps(args.description, technologies, args.max_steps)
+        print("🗂️ Plan steps:")
+        for i, s in enumerate(steps, 1):
+            print(f"  {i}. {s}")
+        print("(plan-only requested; stopping before iterations)")
+        return
+
+    await orchestrator.run(
+        description=args.description,
+        technologies=technologies,
+        output_dir=Path(args.output),
+        run_cmd=args.run_cmd,
+        max_steps=args.max_steps,
+        expect=args.expect,
+        dynamic_run=args.dynamic_run,
+        resume=args.resume
+    )
+    
 async def handle_fix(args, config, logger):
     """Handle intelligent error correction"""
     from .core.error_corrector import ErrorCorrector
