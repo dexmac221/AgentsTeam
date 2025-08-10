@@ -67,6 +67,11 @@ Examples:
     try_parser.add_argument('--debug', action='store_true', help='Verbose debug output')
     try_parser.add_argument('--resume', action='store_true', help='Resume from previous state in output directory if available')
     try_parser.add_argument('--fix-attempts', type=int, default=3, help='Maximum automated fix attempts per failing step')
+    try_parser.add_argument('--rollback', dest='rollback', action='store_true', help='Enable rollback to last successful snapshot on unrecoverable failure')
+    try_parser.add_argument('--no-rollback', dest='rollback', action='store_false', help='Disable rollback snapshots')
+    try_parser.set_defaults(rollback=True)
+    try_parser.add_argument('--no-negative-memory', dest='negative_memory', action='store_false', help='Disable negative memory (allow repeating failed patches)')
+    try_parser.set_defaults(negative_memory=True)
     
     # List models command
     list_parser = subparsers.add_parser('models', help='List available models')
@@ -271,7 +276,9 @@ async def handle_try_error(args, config, logger):
         resume=args.resume,
         probe=args.probe,
         epics=args.epics,
-        epic_steps=args.epic_steps
+        epic_steps=args.epic_steps,
+        rollback=args.rollback,
+        negative_memory=args.negative_memory
     )
     
 async def handle_fix(args, config, logger):

@@ -37,6 +37,12 @@ class TryErrorOrchestrator:
         # New: server probe configuration
         self.default_probe_paths = ['/health', '/status', '/metrics', '/']
         self.probe_timeout = 4
+        self.rollback_enabled = True
+        self.negative_memory_enabled = True
+        self.snapshots_dir_name = '.agentsteam_snapshots'
+        self.max_snapshots = 5
+        self.negative_memory_file = '.agentsteam_negative_memory.json'
+        self._negative_memory_cache = []
 
     async def plan_steps(self, description: str, technologies: List[str], max_steps: int = 10) -> List[str]:
         """Ask LLM for incremental plan steps (smallest -> more complex)."""
@@ -111,7 +117,7 @@ Return ONLY epic names, one per line, 3-8 words each, no numbering."""
                     break
         return flat_steps[:max_steps]
 
-    async def run(self, description: str, technologies: List[str], output_dir: Path, run_cmd: Optional[str], max_steps: int, expect: Optional[str] = None, dynamic_run: bool = True, resume: bool = False, probe: Optional[str] = None, epics: int = 0, epic_steps: int = 0):
+    async def run(self, description: str, technologies: List[str], output_dir: Path, run_cmd: Optional[str], max_steps: int, expect: Optional[str] = None, dynamic_run: bool = True, resume: bool = False, probe: Optional[str] = None, epics: int = 0, epic_steps: int = 0, rollback: bool = True, negative_memory: bool = True):
         start_time = time.time()
         output_dir.mkdir(parents=True, exist_ok=True)
         self.state_file = output_dir / '.agentsteam_state.json'
@@ -183,6 +189,21 @@ Return ONLY epic names, one per line, 3-8 words each, no numbering."""
                 progress_log = json.loads(progress_path.read_text(encoding='utf-8'))
             except Exception:
                 progress_log = []
+        # after steps planning and before main loop, load negative memory
+        neg_file = output_dir / self.negative_memory_file
+        if self.negative_memory_enabled and neg_file.exists():
+            try:
+                self._negative_memory_cache = json.loads(neg_file.read_text(encoding='utf-8'))
+            except Exception:
+                self._negative_memory_cache = []
+        # Ensure snapshot dir
+        snapshots_dir = output_dir / self.snapshots_dir_name
+        if self.rollback_enabled:
+            snapshots_dir.mkdir(exist_ok=True)
+        # Create initial snapshot if starting fresh
+        if self.rollback_enabled and (not previous_state or not previous_state.get('success')):
+            self._create_snapshot(output_dir, snapshots_dir, label='initial')
+
         for idx, step in enumerate(steps, 1):
             if idx < start_step_idx:
                 continue
@@ -213,12 +234,25 @@ Return ONLY epic names, one per line, 3-8 words each, no numbering."""
                 self.logger.warning(f"Change generation failed ({e}); skipping to run.")
                 file_changes = []
 
+            # BEFORE applying file changes, filter out negative memory repeats
+            # (We apply after model proposes, before writing) -> modification in file_changes block
             if not file_changes:
                 print("⚠️ No changes proposed.")
                 stagnation_count += 1
             else:
                 applied = 0
                 last_applied = []
+                # Filter proposals that match negative memory (path+hash)
+                filtered_changes = []
+                for fc in file_changes:
+                    rel = fc.get('path'); code = fc.get('code')
+                    if not rel or not isinstance(code, str):
+                        continue
+                    if self.negative_memory_enabled and self._is_in_negative_memory(rel, code):
+                        print(f"♻️ Skipping previously failed pattern for {rel} (negative memory)")
+                        continue
+                    filtered_changes.append(fc)
+                file_changes = filtered_changes
                 for fc in file_changes:
                     rel = fc.get('path'); code = fc.get('code')
                     if not rel or not isinstance(code, str):
@@ -348,7 +382,13 @@ Return ONLY epic names, one per line, 3-8 words each, no numbering."""
                 progress_log.append(entry)
                 self._write_progress(progress_path, progress_log)
                 self._update_readme_progress(output_dir, progress_log)
-                continue
+                # After successful run create snapshot
+                if success:
+                    if self.rollback_enabled:
+                        self._create_snapshot(output_dir, snapshots_dir, label=f'step{idx}')
+            else:
+                # If failure persists after fix loop we'll mark negative memory & maybe rollback
+                pass
 
             # On failure attempt automated fix (multi-attempt)
             print(f"🔄 Attempting automatic fix loop (up to {self.max_fix_attempts} attempts)")
@@ -729,3 +769,54 @@ JSON only.
             if name and not name.startswith('.'):
                 return name
         return None
+
+    def _create_snapshot(self, root: Path, snapshots_dir: Path, label: str):
+        try:
+            import hashlib, tarfile, io
+            timestamp = int(time.time())
+            tar_name = f'{timestamp}_{label}.tar'
+            tar_path = snapshots_dir / tar_name
+            with tarfile.open(tar_path, 'w') as tar:
+                for p in root.rglob('*'):
+                    if any(part.startswith('.agentsteam_') for part in p.parts):
+                        continue
+                    if p.is_file():
+                        tar.add(p, arcname=str(p.relative_to(root)))
+            # prune old
+            tars = sorted(snapshots_dir.glob('*.tar'), key=lambda x: x.stat().st_mtime, reverse=True)
+            for old in tars[self.max_snapshots:]:
+                try: old.unlink()
+                except Exception: pass
+            print(f"🗃️ Snapshot saved: {tar_name}")
+        except Exception as e:
+            print(f"⚠️ Snapshot failed: {e}")
+
+    def _is_in_negative_memory(self, path: str, code: str) -> bool:
+        import hashlib
+        h = hashlib.sha256((path + '\n' + code).encode('utf-8', errors='ignore')).hexdigest()[:16]
+        for entry in self._negative_memory_cache:
+            if entry.get('hash') == h:
+                return True
+        return False
+
+    def _record_negative_memory(self, path: str, code: str, error_signature: str, output_dir: Path):
+        if not self.negative_memory_enabled:
+            return
+        import hashlib
+        h = hashlib.sha256((path + '\n' + code).encode('utf-8', errors='ignore')).hexdigest()[:16]
+        entry = {'hash': h, 'path': path, 'error': error_signature[:160], 'ts': time.time()}
+        if not any(e.get('hash') == h for e in self._negative_memory_cache):
+            self._negative_memory_cache.append(entry)
+            try:
+                (output_dir / self.negative_memory_file).write_text(json.dumps(self._negative_memory_cache, indent=2), encoding='utf-8')
+            except Exception:
+                pass
+
+    def _error_signature(self, stderr: str) -> str:
+        import re
+        # Simplify signature: last line + exception type lines
+        lines = stderr.strip().splitlines()
+        tail = lines[-3:]
+        types = [l for l in lines if ('Error:' in l or l.startswith('Traceback'))]
+        sig = '|'.join(types[-2:] + tail)
+        return sig[:400]
