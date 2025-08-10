@@ -28,6 +28,15 @@ class TryErrorOrchestrator:
         self.max_change_chars = 6000
         # Track last detected dependencies to avoid redundant writes
         self._last_deps = set()
+        # Track handled missing dependencies to avoid repeated fix attempts
+        self._missing_deps_handled = set()
+        # New: progress tracking file & delimiters for README auto-update
+        self.progress_file_name = '.agentsteam_progress.json'
+        self.readme_progress_start = '<!-- TRY_ERROR_PROGRESS_START -->'
+        self.readme_progress_end = '<!-- TRY_ERROR_PROGRESS_END -->'
+        # New: server probe configuration
+        self.default_probe_paths = ['/health', '/status', '/metrics', '/']
+        self.probe_timeout = 4
 
     async def plan_steps(self, description: str, technologies: List[str], max_steps: int = 10) -> List[str]:
         """Ask LLM for incremental plan steps (smallest -> more complex)."""
@@ -60,13 +69,13 @@ Return one step per line.
             ]
             return fallback[:max_steps]
 
-    async def run(self, description: str, technologies: List[str], output_dir: Path, run_cmd: Optional[str], max_steps: int, expect: Optional[str] = None, dynamic_run: bool = True, resume: bool = False):
+    async def run(self, description: str, technologies: List[str], output_dir: Path, run_cmd: Optional[str], max_steps: int, expect: Optional[str] = None, dynamic_run: bool = True, resume: bool = False, probe: Optional[str] = None):
         start_time = time.time()
         output_dir.mkdir(parents=True, exist_ok=True)
         self.state_file = output_dir / '.agentsteam_state.json'
-
-        # Resume handling: load previous state if requested
+        progress_path = output_dir / self.progress_file_name
         previous_state = None
+        # Resume handling: load previous state if requested
         if resume and self.state_file.exists():
             try:
                 previous_state = json.loads(self.state_file.read_text(encoding='utf-8'))
@@ -121,9 +130,16 @@ Return one step per line.
         last_stderr = previous_state.get('stderr_tail', '') if previous_state else ''
         last_diffs: List[str] = []
         last_applied = []
+        # Load existing progress
+        progress_log = []
+        if progress_path.exists():
+            try:
+                progress_log = json.loads(progress_path.read_text(encoding='utf-8'))
+            except Exception:
+                progress_log = []
         for idx, step in enumerate(steps, 1):
             if idx < start_step_idx:
-                continue  # skip completed steps
+                continue
             print(f"\n➤ Step {idx}/{len(steps)}: {step}")
             if step.lower().startswith('create minimal') and idx > 1:
                 print("(Skipping redundant minimal scaffold step)")
@@ -220,6 +236,23 @@ Return one step per line.
             # Run command
             success, stdout, stderr = await self._run_command(run_cmd, cwd=output_dir)
             last_stdout, last_stderr = stdout, stderr
+            # Stack trace derived candidate files for targeted fix reasoning
+            candidate_files = self._extract_stack_trace_files(stderr, output_dir)
+            # Early missing dependency handling
+            if not success and 'ModuleNotFoundError' in stderr:
+                missing_mod = self._extract_missing_module(stderr)
+                if missing_mod and missing_mod not in self._missing_deps_handled:
+                    print(f"📦 Detected missing dependency: {missing_mod}")
+                    self._missing_deps_handled.add(missing_mod)
+                    try:
+                        self._update_requirements(output_dir, {missing_mod})
+                        print(f"📝 Added {missing_mod} to requirements.txt")
+                    except Exception as e:
+                        print(f"⚠️ Could not update requirements for {missing_mod}: {e}")
+                    print("➡️ Please install dependencies, then resume: \n   pip install -r requirements.txt\n   agentsteam try-error '...' --output" f" {output_dir} --resume")
+                    # Persist and stop early awaiting user action
+                    self._persist_state(idx, step, False, stdout, stderr, output_dir, steps, run_cmd)
+                    return {"success": False, "failed_step": step, "missing_dependency": missing_mod, "stdout": stdout, "stderr": stderr, "awaiting_dependencies": True}
             # Auto-handle simple ImportError for hello_world pattern before invoking fixer
             if not success and 'ImportError' in stderr and 'from hello_world import hello_world' in stderr:
                 stub_file = output_dir / 'hello_world.py'
@@ -241,10 +274,16 @@ Return one step per line.
                 except Exception as e:
                     print(f'⚠️ Could not create stub: {e}')
             self._persist_state(idx, step, success, stdout, stderr, output_dir, steps, run_cmd)
-            if success:
-                print("✅ Run succeeded")
-                if expect and expect not in stdout and not run_cmd.startswith('pytest'):
-                    print(f"❌ Expected substring '{expect}' not found in stdout -> treat as failure")
+            # Enhanced expectation logic: if expect specified and command likely server, attempt HTTP probe
+            server_mode = self._looks_like_server_project(output_dir) or self._run_command_is_server(run_cmd)
+            if success and expect and not run_cmd.startswith('pytest'):
+                expectation_met = expect in stdout
+                if server_mode and not expectation_met:
+                    probe_result = await self._probe_server(expect, output_dir, run_cmd, probe)
+                    if probe_result:
+                        expectation_met = True
+                if not expectation_met:
+                    print(f"❌ Expected indicator '{expect}' not found (stdout/server probe) -> treat as failure")
                     success = False
             if success:
                 # After a successful run, attempt dependency detection/update
@@ -257,18 +296,31 @@ Return one step per line.
                         print(f"📦 Detected new dependencies: {', '.join(sorted(added))}")
                 except Exception as e:
                     print(f"⚠️ Dependency detection failed: {e}")
-                last_diffs = []  # clear diffs after successful run to focus next step
-                continue  # proceed to next step
+                last_diffs = []
+                # Log progress entry and update README progress section
+                entry = {"step": idx, "label": step, "success": True, "timestamp": time.time(), "applied": last_applied, "duration_sec": None}
+                progress_log.append(entry)
+                self._write_progress(progress_path, progress_log)
+                self._update_readme_progress(output_dir, progress_log)
+                continue
 
             # On failure attempt automated fix (multi-attempt)
             print(f"🔄 Attempting automatic fix loop (up to {self.max_fix_attempts} attempts)")
-            fix_ok = await self._attempt_fix(run_cmd, output_dir)
+            fix_ok = await self._attempt_fix(run_cmd, output_dir, candidate_files=candidate_files)
             if fix_ok:
                 print("✅ Fix loop resolved the error")
                 last_diffs = []
+                entry = {"step": idx, "label": step, "success": True, "timestamp": time.time(), "applied": last_applied, "duration_sec": None, "fixed": True}
+                progress_log.append(entry)
+                self._write_progress(progress_path, progress_log)
+                self._update_readme_progress(output_dir, progress_log)
                 continue
             else:
                 print("❌ Fix loop failed; stopping.")
+                entry = {"step": idx, "label": step, "success": False, "timestamp": time.time(), "applied": last_applied, "stderr_tail": stderr[-400:]}
+                progress_log.append(entry)
+                self._write_progress(progress_path, progress_log)
+                self._update_readme_progress(output_dir, progress_log)
                 return {"success": False, "failed_step": step, "stdout": stdout, "stderr": stderr}
 
         total_time = time.time() - start_time
@@ -395,21 +447,6 @@ JSON only.
         except Exception as e:
             return False, '', str(e)
 
-    async def _attempt_fix(self, run_cmd: str, cwd: Path) -> bool:
-        try:
-            from .error_corrector import ErrorCorrector
-            # Adaptive loop: invoke single-attempt fixer repeatedly so we can re-evaluate after each change.
-            for attempt in range(1, self.max_fix_attempts + 1):
-                print(f"   🛠️ Fix attempt {attempt}/{self.max_fix_attempts}")
-                corrector = ErrorCorrector(self.ai_client, self.logger, model=self.model)
-                result = await corrector.run_and_fix(run_cmd, max_attempts=1, cwd=str(cwd))
-                if result.get('success'):
-                    return True
-            return False
-        except Exception as e:
-            self.logger.warning(f"Fix attempt failed: {e}")
-            return False
-
     def _persist_state(self, step_index: int, step: str, success: bool, stdout: str, stderr: str, root: Path, steps: Optional[List[str]] = None, run_cmd: Optional[str] = None):
         state = {
             'step_index': step_index,
@@ -427,7 +464,132 @@ JSON only.
         except Exception as e:
             self.logger.warning(f"Could not persist state: {e}")
 
-    # New helpers for introspection
+    async def _attempt_fix(self, run_cmd: str, cwd: Path, candidate_files: Optional[List[str]] = None) -> bool:
+        try:
+            from .error_corrector import ErrorCorrector
+            # Adaptive loop: invoke single-attempt fixer repeatedly so we can re-evaluate after each change.
+            for attempt in range(1, self.max_fix_attempts + 1):
+                print(f"   🛠️ Fix attempt {attempt}/{self.max_fix_attempts}")
+                corrector = ErrorCorrector(self.ai_client, self.logger, model=self.model)
+                result = await corrector.run_and_fix(run_cmd, max_attempts=1, cwd=str(cwd), candidate_files=candidate_files)
+                if result.get('success'):
+                    return True
+            return False
+        except Exception as e:
+            self.logger.warning(f"Fix attempt failed: {e}")
+            return False
+
+    def _extract_stack_trace_files(self, stderr: str, root: Path) -> List[str]:
+        import re
+        files = []
+        pattern = re.compile(r'File "([^"]+)", line (\d+)')
+        for m in pattern.finditer(stderr):
+            fp = m.group(1)
+            try:
+                p = Path(fp)
+                if not p.is_absolute():
+                    p = root / fp
+                if p.exists() and str(p).startswith(str(root)):
+                    files.append(str(p))
+            except Exception:
+                continue
+        # Deduplicate preserving order
+        seen = set(); ordered = []
+        for f in files:
+            if f not in seen:
+                ordered.append(f); seen.add(f)
+        return ordered[:5]
+
+    def _looks_like_server_project(self, root: Path) -> bool:
+        for name in ('fastapi', 'flask', 'django', 'uvicorn'):
+            for py in root.rglob('*.py'):
+                try:
+                    txt = py.read_text(encoding='utf-8', errors='ignore')
+                    if name in txt:
+                        return True
+                except Exception:
+                    continue
+        return False
+
+    def _run_command_is_server(self, cmd: str) -> bool:
+        server_tokens = ['uvicorn', 'gunicorn', 'fastapi', 'flask', ' --reload', 'runserver']
+        return any(tok in cmd for tok in server_tokens)
+
+    async def _probe_server(self, expect: str, root: Path, run_cmd: str, probe: Optional[str]) -> bool:
+        # Lightweight attempt: try HTTP GET(s) using aiohttp if available; spawn server briefly if needed
+        import asyncio, socket, contextlib
+        probe_spec = probe  # e.g. "/health:contains=ok"
+        try:
+            import aiohttp
+        except ImportError:
+            return False
+        # Determine port guess (basic heuristic: look for 8000/5000/8080)
+        ports = [8000, 5000, 8080]
+        # If run command explicitly specifies a port
+        import re
+        m = re.search(r':(\d{3,5})', run_cmd)
+        if m:
+            try:
+                ports.insert(0, int(m.group(1)))
+            except Exception:
+                pass
+        # Attempt to find running server quickly (assume run just executed)
+        for port in ports[:3]:
+            url_paths = []
+            if probe_spec:
+                part = probe_spec.split(':')[0]
+                url_paths.append(part)
+            url_paths.extend(self.default_probe_paths)
+            async with aiohttp.ClientSession() as session:
+                for path in url_paths:
+                    if not path.startswith('/'):
+                        path = '/' + path
+                    try:
+                        async with session.get(f'http://127.0.0.1:{port}{path}', timeout=self.probe_timeout) as resp:
+                            if resp.status < 500:
+                                text = await resp.text()
+                                if expect and expect in text:
+                                    print(f"🌐 HTTP probe matched expectation on {path} port {port}")
+                                    return True
+                                if probe_spec and ':contains=' in probe_spec:
+                                    needle = probe_spec.split(':contains=')[1]
+                                    if needle in text:
+                                        print(f"🌐 HTTP probe matched custom contains '{needle}' on {path} port {port}")
+                                        return True
+                    except Exception:
+                        continue
+        return False
+
+    def _write_progress(self, progress_path: Path, progress_log: List[Dict[str, Any]]):
+        try:
+            progress_path.write_text(json.dumps(progress_log, indent=2), encoding='utf-8')
+        except Exception as e:
+            print(f"⚠️ Could not write progress log: {e}")
+
+    def _update_readme_progress(self, root: Path, progress_log: List[Dict[str, Any]]):
+        readme = root / 'README.md'
+        if not readme.exists():
+            return
+        try:
+            content = readme.read_text(encoding='utf-8')
+            table_lines = ["Step | Status | Files | Notes", "--- | --- | --- | ---"]
+            for entry in progress_log[-25:]:
+                status = '✅' if entry.get('success') else '❌'
+                files = ','.join(entry.get('applied') or [])[:60]
+                notes = 'fixed' if entry.get('fixed') else ''
+                table_lines.append(f"{entry.get('step')} | {status} | {files} | {notes}")
+            table_md = '\n'.join(table_lines)
+            block = f"{self.readme_progress_start}\n### Incremental Progress\n\n{table_md}\n{self.readme_progress_end}"
+            if self.readme_progress_start in content and self.readme_progress_end in content:
+                import re
+                pattern = re.compile(re.escape(self.readme_progress_start) + r'.*?' + re.escape(self.readme_progress_end), re.DOTALL)
+                content = pattern.sub(block, content)
+            else:
+                content += "\n\n" + block + "\n"
+            readme.write_text(content, encoding='utf-8')
+        except Exception as e:
+            print(f"⚠️ Could not update README progress section: {e}")
+
     def _snapshot_files(self, root: Path) -> Dict[str, str]:
         snap = {}
         for p in root.rglob('*.py'):
@@ -442,7 +604,6 @@ JSON only.
     def _make_diff(self, path: str, old: str, new: str) -> str:
         diff = difflib.unified_diff(old.splitlines(), new.splitlines(), fromfile=path+':old', tofile=path+':new', lineterm='')
         lines = list(diff)
-        # truncate long diffs
         if len(lines) > 120:
             lines = lines[:120] + ['... (truncated)']
         return '\n'.join(lines)
@@ -460,7 +621,6 @@ JSON only.
         return '\n'.join(parts) or '(no prior run context)'
 
     async def _request_smaller_patch(self, path: str, old_content: str, description: str, step: str, expect: Optional[str]) -> Optional[str]:
-        """Ask model for a reduced-size focused patch for an oversized change."""
         prompt = f"""You proposed an update exceeding size budget for file {path} while building project: {description}. Current step: {step}. Provide a SINGLE JSON array with one element containing a minimal coherent updated FULL file content for {path} strictly under {self.max_change_chars} characters that advances only this step. If expectation substring {expect or '(none)'} is relevant, ensure output still supports it. Respond JSON only."""
         try:
             raw = await self.ai_client.generate(self.model, prompt)
@@ -472,14 +632,13 @@ JSON only.
         return None
 
     def _detect_python_dependencies(self, root: Path) -> set:
-        """Very simple import scanner to collect top-level third-party modules."""
         import sys, re
         stdlib = set(getattr(sys, 'stdlib_module_names', set()))
         local_modules = {p.stem for p in root.glob('*.py')}
         deps = set()
         pattern = re.compile(r'^(?:from|import)\s+([a-zA-Z0-9_]+)')
         for py in root.rglob('*.py'):
-            if py.stat().st_size > 30000:  # skip huge files
+            if py.stat().st_size > 30000:
                 continue
             try:
                 for line in py.read_text(encoding='utf-8', errors='ignore').splitlines():
@@ -488,7 +647,6 @@ JSON only.
                         mod = m.group(1)
                         if mod in local_modules or mod in stdlib:
                             continue
-                        # Ignore obvious builtins
                         if mod in ('typing','pathlib','json','time','asyncio','sys','os','re','subprocess','dataclasses'):
                             continue
                         deps.add(mod.lower())
@@ -516,3 +674,12 @@ JSON only.
             req.write_text('\n'.join(existing).rstrip() + '\n', encoding='utf-8')
         except Exception as e:
             print(f"⚠️ Could not update requirements.txt: {e}")
+
+    def _extract_missing_module(self, stderr: str) -> Optional[str]:
+        import re
+        m = re.search(r"ModuleNotFoundError: No module named '([^']+)'", stderr)
+        if m:
+            name = m.group(1).strip()
+            if name and not name.startswith('.'):
+                return name
+        return None

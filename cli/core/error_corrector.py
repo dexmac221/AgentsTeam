@@ -48,27 +48,31 @@ class ErrorCorrector:
             '.rs': 'rust',
             '.go': 'go'
         }
-        
-    async def run_and_fix(self, command: str, max_attempts: int = 3) -> Dict:
+        # New: optional prioritized file list injected by orchestrator
+        self.candidate_files: List[Path] = []
+
+    async def run_and_fix(self, command: str, max_attempts: int = 3, cwd: Optional[str] = None, candidate_files: Optional[List[str]] = None) -> Dict:
         """
         Run a command and automatically fix any errors that occur.
         
         Args:
             command: Command to execute
             max_attempts: Maximum number of fix attempts
+            cwd: Optional working directory to execute the command in
+            candidate_files: Optional list of file paths to prioritize for fixing
             
         Returns:
             Dict with success status, output, and fix details
         """
         attempt = 0
         original_files = {}
-        
+        self.candidate_files = [Path(f) for f in (candidate_files or []) if f]
         while attempt < max_attempts:
             attempt += 1
-            self.logger.info(f"Attempt {attempt}: Running command: {command}")
+            self.logger.info(f"Attempt {attempt}: Running command: {command} (cwd={cwd or os.getcwd()})")
             
             # Run the command
-            result = await self._run_command(command)
+            result = await self._run_command(command, cwd=cwd)
             
             if result['success']:
                 return {
@@ -192,14 +196,14 @@ class ErrorCorrector:
         except Exception as e:
             return {'success': False, 'error': f'Could not write fixed file: {e}'}
     
-    async def _run_command(self, command: str) -> Dict:
-        """Run a command and capture output."""
+    async def _run_command(self, command: str, cwd: Optional[str] = None) -> Dict:
+        """Run a command and capture output (respect optional cwd)."""
         try:
             process = await asyncio.create_subprocess_shell(
                 command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=os.getcwd()
+                cwd=cwd or os.getcwd()
             )
             
             stdout, stderr = await process.communicate()
@@ -315,11 +319,18 @@ class ErrorCorrector:
             return {'success': False, 'error': f'Could not write fixed file: {e}'}
     
     def _find_error_file(self, error_info: Dict) -> Optional[Path]:
-        """Find the file that needs to be fixed based on error information."""
+        """Find the file that needs to be fixed based on error information.
+        Prioritize candidate_files provided by orchestrator.
+        """
+        # First check explicit file_match
         if error_info.get('file_match'):
             file_path = Path(error_info['file_match'])
             if file_path.exists():
                 return file_path
+        # Next prioritize candidate files (within cwd or absolute)
+        for cf in self.candidate_files:
+            if cf.exists():
+                return cf
         
         # Look for common files in current directory
         current_dir = Path('.')

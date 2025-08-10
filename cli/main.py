@@ -56,7 +56,8 @@ Examples:
     try_parser.add_argument('--output', '-o', help='Output directory', default='./generated_try')
     try_parser.add_argument('--run-cmd', help='Run command executed each iteration (auto-infer if omitted)')
     try_parser.add_argument('--max-steps', type=int, default=10, help='Maximum incremental build steps')
-    try_parser.add_argument('--expect', help='Expected substring in stdout (treat absence as error)')
+    try_parser.add_argument('--expect', help='Expected substring in stdout or HTTP probe response (treat absence as error)')
+    try_parser.add_argument('--probe', help='HTTP probe spec path[:contains=TEXT] for server apps (e.g. /health:contains=ok)')
     try_parser.add_argument('--plan-only', action='store_true', help='Only produce and print the incremental plan (no execution)')
     try_parser.add_argument('--dynamic-run', dest='dynamic_run', action='store_true', help='Dynamically re-infer run command when project gains tests')
     try_parser.add_argument('--no-dynamic-run', dest='dynamic_run', action='store_false', help='Disable dynamic run command switching')
@@ -265,7 +266,8 @@ async def handle_try_error(args, config, logger):
         max_steps=args.max_steps,
         expect=args.expect,
         dynamic_run=args.dynamic_run,
-        resume=args.resume
+        resume=args.resume,
+        probe=args.probe
     )
     
 async def handle_fix(args, config, logger):

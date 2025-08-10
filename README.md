@@ -246,12 +246,17 @@ Implemented:
 - Stagnation reflection recovery (auto micro-step rewrite after repeated no-change cycles)
 - Large diff guard with reduction request (oversize change shrink request)
 - Automatic Python dependency detection & requirements.txt updates
+- Targeted multi-file fix reasoning (stack trace candidate prioritization)
+- Assertion-aware expectation handling (server probe fallback for web apps)
+- HTTP server probing for expectations (`--probe` support, heuristic endpoints)
+- README auto-update with progress table (last 25 steps)
+- Progress JSON log (.agentsteam_progress.json)
 
 Planned / Not Yet Implemented:
 - Rich pytest failure parsing (structured assertion / failing test extraction fed back to model)
-- More targeted multi-file fix reasoning (parsing stack traces to pick precise files)
-- Assertion-aware expectation handling (map expected substring to output structure)
-- README auto-update of generated project with progress log
+- Enhanced assertion structure extraction for complex multi-assert test reports
+- Advanced dependency version inference (pinning popular versions)
+- Multi-run adaptive probing strategies (POST /metrics etc.)
 
 ---
 ## Commands Reference (Quick)
@@ -285,3 +290,10 @@ Always treat outputs as a draft to refine, not production‑ready software.
 
 ## License
 MIT. See LICENSE.
+
+<!-- TRY_ERROR_PROGRESS_START -->
+### Incremental Progress
+
+Step | Status | Files | Notes
+--- | --- | --- | ---
+<!-- TRY_ERROR_PROGRESS_END -->
