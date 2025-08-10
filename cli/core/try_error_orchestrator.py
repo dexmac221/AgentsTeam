@@ -110,6 +110,8 @@ Return one step per line.
             print(f"🏃 Using provided run command: {run_cmd}")
 
         stagnation_count = 0
+        # Add configurable stagnation threshold
+        stagnation_threshold = 2
         file_snapshots: Dict[str, str] = self._snapshot_files(output_dir)
         last_stdout = previous_state.get('stdout_tail', '') if previous_state else ''
         last_stderr = previous_state.get('stderr_tail', '') if previous_state else ''
@@ -179,9 +181,26 @@ Return one step per line.
                 stagnation_count = 0 if applied > 0 else stagnation_count + 1
 
             # Detect stagnation
-            if stagnation_count >= 2:
-                print("⚠️ Stagnation detected (no effective changes twice). Stopping early.")
-                break
+            if stagnation_count >= stagnation_threshold:
+                # Instead of stopping immediately, attempt a reflection step once
+                print("🧠 Stagnation detected: invoking reflection to adjust next micro-step")
+                reflection_prompt = f"""You are stuck improving a project with goal: {description}. Recent step description: {step}. No effective changes were produced. Provide ONE concise next micro-step (<=12 words) that is smaller/simpler and likely to move forward. Output ONLY the phrase, no numbering, no punctuation at end."""
+                try:
+                    reflection = await self.ai_client.generate(self.model, reflection_prompt)
+                    candidate = reflection.strip().splitlines()[0].strip('- ').strip()
+                    if candidate and candidate.lower() not in [s.lower() for s in steps]:
+                        print(f"🔧 Replacing stalled step with reflective micro-step: {candidate}")
+                        steps[idx-1] = candidate
+                        stagnation_count = 0
+                        # Persist updated plan
+                        self._persist_state(idx, candidate, False, last_stdout, last_stderr, output_dir, steps, run_cmd)
+                        # Retry loop iteration with new step label (continue moves to run phase)
+                    else:
+                        print("⚠️ Reflection produced no usable alternative; stopping early.")
+                        break
+                except Exception as e:
+                    print(f"⚠️ Reflection failed: {e}; stopping early.")
+                    break
 
             # Run command
             success, stdout, stderr = await self._run_command(run_cmd, cwd=output_dir)

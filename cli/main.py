@@ -63,6 +63,7 @@ Examples:
     try_parser.set_defaults(dynamic_run=True)
     try_parser.add_argument('--debug', action='store_true', help='Verbose debug output')
     try_parser.add_argument('--resume', action='store_true', help='Resume from previous state in output directory if available')
+    try_parser.add_argument('--fix-attempts', type=int, default=3, help='Maximum automated fix attempts per failing step')
     
     # List models command
     list_parser = subparsers.add_parser('models', help='List available models')
@@ -245,6 +246,7 @@ async def handle_try_error(args, config, logger):
         ai_client = OPC(config, logger)
 
     orchestrator = TryErrorOrchestrator(ai_client, logger, model=model_info['model'])
+    orchestrator.max_fix_attempts = args.fix_attempts
     technologies = args.tech.split(',') if args.tech else []
 
     if args.plan_only:

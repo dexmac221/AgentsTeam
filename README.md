@@ -238,22 +238,20 @@ Implemented:
 - Diff tracking & introspection (recent diffs, stdout/stderr, applied files fed back to model)
 - Dynamic run command inference (re-evaluates each step; switches to pytest only when test files exist)
 - Expected substring gating on non-pytest runs (`--expect`)
-- Adaptive multi-attempt fix loop (up to 3 single-attempt internal fixer cycles)
+- Adaptive multi-attempt fix loop (up to 3 single-attempt internal fixer cycles; configurable via `--fix-attempts`)
 - ImportError heuristic stub injection for simple missing greeting function
 - Path safety (prevent writes outside target project)
 - State persistence (.agentsteam_state.json)
 - Resume from persisted state (`--resume` to skip completed steps)
+- Stagnation reflection recovery (auto micro-step rewrite after repeated no-change cycles)
 
 Planned / Not Yet Implemented:
 - Rich pytest failure parsing (structured assertion / failing test extraction fed back to model)
 - More targeted multi-file fix reasoning (parsing stack traces to pick precise files)
-- Smarter pytest switch (require both test and target module existence; delay premature failing tests)
-- Assertion-aware expectation handling (map expected substring to test content)
-- Stagnation recovery strategy (reflect & re-plan micro-step when no progress N times)
+- Assertion-aware expectation handling (map expected substring to output structure)
 - Large diff guard / size budgeting
 - Dependency installation / virtualenv management steps execution (currently only planned text)
 - README auto-update of generated project with progress log
-- Configurable max fix attempts via CLI flag
 
 ---
 ## Commands Reference (Quick)
