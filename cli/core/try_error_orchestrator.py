@@ -167,8 +167,8 @@ Return ONLY epic names, one per line, 3-8 words each, no numbering."""
 
         # Minimal scaffold only if not resuming and directory empty
         if not previous_state and not any(output_dir.iterdir()):
-            self._write_minimal_scaffold(output_dir, description)
-            print("🧱 Created minimal scaffold: main.py")
+            self._write_minimal_scaffold(output_dir, description, technologies)  # pass technologies
+            print("🧱 Created minimal scaffold: " + ("tetris.bas" if any("basic" in t.lower() for t in technologies) or "commodore 64 basic" in description.lower() else "main.py"))
 
         if not run_cmd:
             # Use previous run_cmd if available
@@ -501,14 +501,31 @@ Return ONLY epic names, one per line, 3-8 words each, no numbering."""
         return {"success": True, "steps": steps, "time": total_time}
 
     # ----------------- Helpers -----------------
-    def _write_minimal_scaffold(self, output_dir: Path, description: str):
-        (output_dir / 'main.py').write_text(
-            "#!/usr/bin/env python3\n" \
-            "def main():\n" \
-            "    print(\"Hello world\")\n\n" \
-            "if __name__ == '__main__':\n" \
-            "    main()\n", encoding='utf-8')
-        (output_dir / 'README.md').write_text(f"# Incremental Project\n\n{description}\n", encoding='utf-8')
+    def _write_minimal_scaffold(self, output_dir: Path, description: str, technologies: List[str]):
+        # NEW: language-aware minimal scaffold
+        lower_desc = description.lower()
+        wants_basic = any('basic' in t.lower() for t in technologies) or 'commodore 64 basic' in lower_desc or 'c64' in lower_desc
+        if wants_basic:
+            (output_dir / 'tetris.bas').write_text(
+                "10 REM C64 TETRIS - INITIAL SCAFFOLD\n"
+                "20 REM THIS FILE WILL BE REPLACED IN INCREMENTAL STEPS\n"
+                "30 REM GOAL: IMPLEMENT PIECE SPAWN, MOVE, ROTATE, LINE CLEAR, SCORE, SPEED, GAME OVER\n"
+                "40 PRINT \"TETRIS SCAFFOLD\"\n"
+                "50 PRINT \"(INCREMENTAL BUILD PLACEHOLDER)\"\n",
+                encoding='utf-8'
+            )
+            if not (output_dir / 'README.md').exists():
+                (output_dir / 'README.md').write_text(f"# C64 Tetris (Incremental)\n\n{description}\n\nGenerated via AgentsTeam try-error mode.\n", encoding='utf-8')
+        else:
+            # existing python scaffold
+            (output_dir / 'main.py').write_text(
+                "#!/usr/bin/env python3\n" \
+                "def main():\n" \
+                "    print(\"Hello world\")\n\n" \
+                "if __name__ == '__main__':\n" \
+                "    main()\n", encoding='utf-8')
+            if not (output_dir / 'README.md').exists():
+                (output_dir / 'README.md').write_text(f"# Incremental Project\n\n{description}\n", encoding='utf-8')
 
     def _infer_run_command(self, output_dir: Path) -> str:
         # Only switch to pytest if tests actually exist
@@ -529,9 +546,18 @@ Return ONLY epic names, one per line, 3-8 words each, no numbering."""
         return 'python main.py'
 
     def _build_change_prompt(self, description: str, technologies: List[str], step: str, context_summary: str, expect: Optional[str], introspection: str) -> str:
+        # ...existing code replaced to inject BASIC single-file guidance when needed...
         expectation = f"Expected stdout should contain substring: '{expect}'." if expect else ''
+        extra_guidance = ''
+        lower_desc = description.lower()
+        if 'commodore 64 basic' in lower_desc or any('basic' in t.lower() for t in technologies):
+            extra_guidance = (
+                "\nProject MUST be a single Commodore 64 BASIC V2 source file named tetris.bas. "
+                "Return JSON updating ONLY tetris.bas. Provide FULL line-numbered BASIC code (no Python). "
+                "Keep each incremental change minimal: if file not present or still scaffold, create initial basic board + render."
+            )
         return f"""
-You are improving an existing project incrementally.
+You are improving an existing project incrementally.{extra_guidance}
 Project goal: {description}
 Current step: {step}
 Technologies: {', '.join(technologies) if technologies else 'unspecified'}
@@ -542,11 +568,12 @@ Existing files summary (filenames and first lines):
 Recent introspection (diffs / last errors / applied files):
 {introspection}
 
-Produce ONLY a JSON array of file changes. Each element: {{"path": "relative/path.py", "code": "FULL NEW CONTENT"}}.
+Produce ONLY a JSON array of file changes. Each element: {{"path": "relative/path", "code": "FULL NEW CONTENT"}}.
 Rules:
 - Include ONLY new or modified files necessary for THIS step.
 - Omit unchanged files.
 - Keep changes minimal and coherent with diffs & errors.
+- If single-file BASIC project: always output only tetris.bas full content.
 - If previous run succeeded and this step is about tests, create minimal failing test first.
 - No explanations, no surrounding markdown, no code fences.
 JSON only.
