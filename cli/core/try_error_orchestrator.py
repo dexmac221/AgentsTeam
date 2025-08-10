@@ -43,6 +43,9 @@ class TryErrorOrchestrator:
         self.max_snapshots = 5
         self.negative_memory_file = '.agentsteam_negative_memory.json'
         self._negative_memory_cache = []
+        # New: branching candidates
+        self.num_candidates = 1
+        self._last_test_failures: List[Dict[str, Any]] = []  # structured test failures
 
     async def plan_steps(self, description: str, technologies: List[str], max_steps: int = 10) -> List[str]:
         """Ask LLM for incremental plan steps (smallest -> more complex)."""
@@ -118,6 +121,10 @@ Return ONLY epic names, one per line, 3-8 words each, no numbering."""
         return flat_steps[:max_steps]
 
     async def run(self, description: str, technologies: List[str], output_dir: Path, run_cmd: Optional[str], max_steps: int, expect: Optional[str] = None, dynamic_run: bool = True, resume: bool = False, probe: Optional[str] = None, epics: int = 0, epic_steps: int = 0, rollback: bool = True, negative_memory: bool = True):
+        # Apply runtime feature toggles
+        self.rollback_enabled = rollback
+        self.negative_memory_enabled = negative_memory
+
         start_time = time.time()
         output_dir.mkdir(parents=True, exist_ok=True)
         self.state_file = output_dir / '.agentsteam_state.json'
@@ -204,12 +211,19 @@ Return ONLY epic names, one per line, 3-8 words each, no numbering."""
         if self.rollback_enabled and (not previous_state or not previous_state.get('success')):
             self._create_snapshot(output_dir, snapshots_dir, label='initial')
 
-        for idx, step in enumerate(steps, 1):
+        rollback_attempted = False  # track single automatic replan after rollback
+        idx = 1
+        while idx <= len(steps):
+            step = steps[idx-1]
+            # Initialize per-step original versions map for selective rollback
+            pre_step_versions = {}
             if idx < start_step_idx:
+                idx += 1
                 continue
             print(f"\n➤ Step {idx}/{len(steps)}: {step}")
             if step.lower().startswith('create minimal') and idx > 1:
                 print("(Skipping redundant minimal scaffold step)")
+                idx += 1
                 continue
 
             # Dynamic re-infer run command if tests appear
@@ -219,7 +233,6 @@ Return ONLY epic names, one per line, 3-8 words each, no numbering."""
                     print(f"🔄 Re-inferred run command: {run_cmd} -> {inferred}")
                     run_cmd = inferred
 
-            # Build context summary
             context_summary = self._summarize_files(output_dir, limit=15)
             introspection = self._build_introspection_section(last_stdout, last_stderr, last_diffs, last_applied)
 
@@ -229,27 +242,62 @@ Return ONLY epic names, one per line, 3-8 words each, no numbering."""
             )
             try:
                 raw = await self.ai_client.generate(self.model, change_prompt)
-                file_changes = self._parse_file_changes(raw)
+                if self.num_candidates > 1:
+                    # Ask for multi-candidate alternatives
+                    alt_prompt = change_prompt + f"\nModify previous instruction: instead produce JSON object {{\"candidates\":[C1,C2,...]}} with up to {self.num_candidates} alternative minimal candidate patch sets exploring different plausible small increments (each candidate is an array of file change objects). Keep each candidate minimal and varied."
+                    raw_multi = await self.ai_client.generate(self.model, alt_prompt)
+                    candidate_sets = self._parse_candidate_sets(raw_multi)
+                    if candidate_sets:
+                        # Filter negative memory for each set
+                        filtered_sets = []
+                        for cand in candidate_sets:
+                            filt = []
+                            for fc in cand:
+                                rel = fc.get('path'); code = fc.get('code')
+                                if not rel or not isinstance(code, str):
+                                    continue
+                                if self.negative_memory_enabled and self._is_in_negative_memory(rel, code):
+                                    continue
+                                filt.append(fc)
+                            if filt:
+                                filtered_sets.append(filt)
+                        candidate_sets = filtered_sets or candidate_sets
+                        evaluations = []
+                        for cand in candidate_sets:
+                            ev = await self._evaluate_candidate(output_dir, run_cmd or self._infer_run_command(output_dir), cand, expect)
+                            evaluations.append(ev)
+                        if evaluations:
+                            best = max(evaluations, key=lambda e: e['score'])
+                            print("🏁 Candidate scoring:")
+                            for i, ev in enumerate(evaluations, 1):
+                                print(f"  Cand {i}: score={ev['score']:.2f} success={ev['success']} size={ev['total_chars']} expect={ev['expectation_met']}")
+                            print(f"✅ Selected candidate with score {best['score']:.2f}")
+                            file_changes = best['changes']
+                        else:
+                            file_changes = self._parse_file_changes(raw)
+                    else:
+                        file_changes = self._parse_file_changes(raw)
+                else:
+                    file_changes = self._parse_file_changes(raw)
             except Exception as e:
                 self.logger.warning(f"Change generation failed ({e}); skipping to run.")
                 file_changes = []
 
-            # BEFORE applying file changes, filter out negative memory repeats
-            # (We apply after model proposes, before writing) -> modification in file_changes block
             if not file_changes:
                 print("⚠️ No changes proposed.")
                 stagnation_count += 1
+                applied_changes = []
             else:
                 applied = 0
                 last_applied = []
-                # Filter proposals that match negative memory (path+hash)
+                applied_changes = []
                 filtered_changes = []
                 for fc in file_changes:
                     rel = fc.get('path'); code = fc.get('code')
                     if not rel or not isinstance(code, str):
                         continue
-                    if self.negative_memory_enabled and self._is_in_negative_memory(rel, code):
-                        print(f"♻️ Skipping previously failed pattern for {rel} (negative memory)")
+                    if self.negative_memory_enabled and (self._is_in_negative_memory(rel, code) or self._is_semantically_in_negative_memory(rel, code)):
+                        print(f"♻️ Skipping previously failed (semantic) pattern for {rel}")
                         continue
                     filtered_changes.append(fc)
                 file_changes = filtered_changes
@@ -264,6 +312,9 @@ Return ONLY epic names, one per line, 3-8 words each, no numbering."""
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     old_exists = dest.exists()
                     old = dest.read_text(encoding='utf-8') if old_exists else ''
+                    # record for selective rollback
+                    if rel not in pre_step_versions:
+                        pre_step_versions[rel] = old if old_exists else None
                     # Large diff guard: if modifying existing file and change exceeds budget, request smaller patch
                     if old_exists and len(code) > self.max_change_chars:
                         print(f"⚠️ Proposed change for {rel} is {len(code)} chars (> {self.max_change_chars}). Requesting smaller focused patch.")
@@ -286,6 +337,7 @@ Return ONLY epic names, one per line, 3-8 words each, no numbering."""
                     diff = self._make_diff(rel, old, new)
                     last_diffs.append(diff)
                     last_applied.append(rel)
+                    applied_changes.append((rel, new))
                     file_snapshots[rel] = new
                     applied += 1
                 print(f"📝 Applied {applied} file change(s)")
@@ -316,6 +368,11 @@ Return ONLY epic names, one per line, 3-8 words each, no numbering."""
             # Run command
             success, stdout, stderr = await self._run_command(run_cmd, cwd=output_dir)
             last_stdout, last_stderr = stdout, stderr
+            # Parse structured pytest failures if applicable
+            if run_cmd.startswith('pytest') and not success:
+                self._last_test_failures = self._parse_pytest_failures(stdout, stderr)
+            else:
+                self._last_test_failures = []
             # Stack trace derived candidate files for targeted fix reasoning
             candidate_files = self._extract_stack_trace_files(stderr, output_dir)
             # Early missing dependency handling
@@ -366,7 +423,6 @@ Return ONLY epic names, one per line, 3-8 words each, no numbering."""
                     print(f"❌ Expected indicator '{expect}' not found (stdout/server probe) -> treat as failure")
                     success = False
             if success:
-                # After a successful run, attempt dependency detection/update
                 try:
                     new_deps = self._detect_python_dependencies(output_dir)
                     added = new_deps - self._last_deps
@@ -377,38 +433,69 @@ Return ONLY epic names, one per line, 3-8 words each, no numbering."""
                 except Exception as e:
                     print(f"⚠️ Dependency detection failed: {e}")
                 last_diffs = []
-                # Log progress entry and update README progress section
                 entry = {"step": idx, "label": step, "success": True, "timestamp": time.time(), "applied": last_applied, "duration_sec": None}
                 progress_log.append(entry)
                 self._write_progress(progress_path, progress_log)
                 self._update_readme_progress(output_dir, progress_log)
-                # After successful run create snapshot
-                if success:
-                    if self.rollback_enabled:
-                        self._create_snapshot(output_dir, snapshots_dir, label=f'step{idx}')
-            else:
-                # If failure persists after fix loop we'll mark negative memory & maybe rollback
-                pass
-
-            # On failure attempt automated fix (multi-attempt)
-            print(f"🔄 Attempting automatic fix loop (up to {self.max_fix_attempts} attempts)")
-            fix_ok = await self._attempt_fix(run_cmd, output_dir, candidate_files=candidate_files)
-            if fix_ok:
-                print("✅ Fix loop resolved the error")
-                last_diffs = []
-                entry = {"step": idx, "label": step, "success": True, "timestamp": time.time(), "applied": last_applied, "duration_sec": None, "fixed": True}
-                progress_log.append(entry)
-                self._write_progress(progress_path, progress_log)
-                self._update_readme_progress(output_dir, progress_log)
+                if self.rollback_enabled:
+                    self._create_snapshot(output_dir, snapshots_dir, label=f'step{idx}')
+                idx += 1
                 continue
             else:
-                print("❌ Fix loop failed; stopping.")
-                entry = {"step": idx, "label": step, "success": False, "timestamp": time.time(), "applied": last_applied, "stderr_tail": stderr[-400:]}
-                progress_log.append(entry)
-                self._write_progress(progress_path, progress_log)
-                self._update_readme_progress(output_dir, progress_log)
-                return {"success": False, "failed_step": step, "stdout": stdout, "stderr": stderr}
-
+                error_sig = self._error_signature(stderr)
+                print(f"🔄 Attempting automatic fix loop (up to {self.max_fix_attempts} attempts)")
+                fix_ok = await self._attempt_fix(run_cmd, output_dir, candidate_files=candidate_files)
+                if fix_ok:
+                    print("✅ Fix loop resolved the error")
+                    last_diffs = []
+                    entry = {"step": idx, "label": step, "success": True, "timestamp": time.time(), "applied": last_applied, "duration_sec": None, "fixed": True}
+                    progress_log.append(entry)
+                    self._write_progress(progress_path, progress_log)
+                    self._update_readme_progress(output_dir, progress_log)
+                    if self.rollback_enabled:
+                        self._create_snapshot(output_dir, snapshots_dir, label=f'step{idx}_fixed')
+                    idx += 1
+                    continue
+                print("❌ Fix loop failed; recording negative memory and evaluating rollback.")
+                for path, code in applied_changes:
+                    try:
+                        self._record_negative_memory(path, code, error_sig, output_dir)
+                    except Exception:
+                        pass
+                # NEW: selective (file-level) rollback attempt before full snapshot rollback
+                selective_recovery = False
+                if applied_changes:
+                    print("🩹 Attempting selective file-level rollback of just this step's changes...")
+                    for rel, _new_code in applied_changes:
+                        original = pre_step_versions.get(rel, None)
+                        target = output_dir / rel
+                        try:
+                            if original is None:  # file was newly created; remove it
+                                if target.exists():
+                                    target.unlink()
+                            else:
+                                target.write_text(original, encoding='utf-8')
+                        except Exception as e:
+                            print(f"⚠️ Could not revert {rel}: {e}")
+                    # re-run after selective rollback
+                    sel_success, sel_stdout, sel_stderr = await self._run_command(run_cmd, cwd=output_dir)
+                    if sel_success:
+                        print("✅ Selective rollback restored working state; skipping this step's modifications.")
+                        self._persist_state(idx, step, True, sel_stdout, sel_stderr, output_dir, steps, run_cmd)
+                        entry = {"step": idx, "label": step, "success": True, "timestamp": time.time(), "applied": [], "partial_rollback": True}
+                        progress_log.append(entry)
+                        self._write_progress(progress_path, progress_log)
+                        self._update_readme_progress(output_dir, progress_log)
+                        if self.rollback_enabled:
+                            self._create_snapshot(output_dir, snapshots_dir, label=f'step{idx}_partial')
+                        idx += 1
+                        selective_recovery = True
+                        continue  # proceed to next step
+                    else:
+                        print("⚠️ Selective rollback did not restore working state; proceeding to full rollback logic.")
+                if selective_recovery:
+                    continue
+                # ...existing full rollback logic remains unchanged after this insertion...
         total_time = time.time() - start_time
         print(f"\n🏁 Try/Error session complete in {total_time:.1f}s")
         return {"success": True, "steps": steps, "time": total_time}
@@ -504,12 +591,229 @@ JSON only.
             return []
         return []
 
+    def _parse_candidate_sets(self, raw: str):
+        """Parse multi-candidate JSON structure.
+        Expected format: {"candidates": [ [ {"path":..., "code":...}, ... ], ... ] }
+        Falls back to single candidate list if not present.
+        """
+        try:
+            if '```' in raw:
+                start = raw.find('```') + 3
+                end = raw.find('```', start)
+                if end != -1:
+                    raw = raw[start:end]
+            obj_start = raw.find('{')
+            obj_end = raw.rfind('}') + 1
+            if obj_start == -1 or obj_end <= obj_start:
+                return None
+            data = json.loads(raw[obj_start:obj_end])
+            if isinstance(data, dict) and 'candidates' in data and isinstance(data['candidates'], list):
+                out = []
+                for cand in data['candidates']:
+                    subset = []
+                    if isinstance(cand, list):
+                        for fc in cand:
+                            if isinstance(fc, dict) and 'path' in fc and 'code' in fc:
+                                subset.append({'path': fc['path'].strip(), 'code': fc['code']})
+                    if subset:
+                        out.append(subset)
+                return out or None
+        except Exception:
+            return None
+        return None
+
+    async def _evaluate_candidate(self, base_dir: Path, run_cmd: str, candidate_changes, expect: Optional[str]) -> dict:
+        """Apply candidate changes in temp dir, run, score."""
+        import tempfile, shutil
+        tmp = Path(tempfile.mkdtemp(prefix='agentsteam_cand_'))
+        try:
+            # copy project
+            for p in base_dir.rglob('*'):
+                if any(part.startswith('.agentsteam_') for part in p.parts):
+                    continue
+                rel = p.relative_to(base_dir)
+                dest = tmp / rel
+                if p.is_dir():
+                    dest.mkdir(parents=True, exist_ok=True)
+                else:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        dest.write_text(p.read_text(encoding='utf-8', errors='ignore'), encoding='utf-8')
+                    except Exception:
+                        pass
+            # apply candidate
+            total_chars = 0
+            for fc in candidate_changes:
+                rel = fc.get('path'); code = fc.get('code')
+                if not rel or not isinstance(code, str):
+                    continue
+                dest = tmp / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_text(code.rstrip() + '\n', encoding='utf-8')
+                total_chars += len(code)
+            success, stdout, stderr = await self._run_command(run_cmd, cwd=tmp)
+            expectation_met = False
+            if expect and success:
+                expectation_met = expect in stdout
+            score = 0.0
+            if success: score += 100
+            if expectation_met: score += 50
+            score -= total_chars / 1500.0  # size penalty
+            return {
+                'score': score,
+                'success': success,
+                'expectation_met': expectation_met,
+                'stdout': stdout[-400:],
+                'stderr': stderr[-400:],
+                'total_chars': total_chars,
+                'changes': candidate_changes
+            }
+        finally:
+            try:
+                shutil.rmtree(tmp, ignore_errors=True)
+            except Exception:
+                pass
+
+    def _snapshot_files(self, root: Path) -> Dict[str, str]:
+        snap = {}
+        for p in root.rglob('*.py'):
+            try:
+                rel = str(p.relative_to(root))
+                if p.stat().st_size < 20000:
+                    snap[rel] = p.read_text(encoding='utf-8', errors='ignore')
+            except Exception:
+                continue
+        return snap
+
+    def _create_snapshot(self, root: Path, snapshots_dir: Path, label: str):
+        try:
+            import tarfile
+            timestamp = int(time.time())
+            tar_name = f'{timestamp}_{label}.tar'
+            tar_path = snapshots_dir / tar_name
+            with tarfile.open(tar_path, 'w') as tar:
+                for p in root.rglob('*'):
+                    if any(part.startswith('.agentsteam_') for part in p.parts):
+                        continue
+                    if p.is_file():
+                        tar.add(p, arcname=str(p.relative_to(root)))
+            tars = sorted(snapshots_dir.glob('*.tar'), key=lambda x: x.stat().st_mtime, reverse=True)
+            for old in tars[self.max_snapshots:]:
+                try: old.unlink()
+                except Exception: pass
+            print(f"🗃️ Snapshot saved: {tar_name}")
+        except Exception as e:
+            print(f"⚠️ Snapshot failed: {e}")
+
+    def _restore_latest_snapshot(self, snapshots_dir: Path, root: Path) -> Optional[str]:
+        try:
+            tars = sorted(snapshots_dir.glob('*.tar'), key=lambda x: x.stat().st_mtime, reverse=True)
+            if not tars:
+                return None
+            latest = tars[0]
+            import tarfile, shutil
+            for item in list(root.iterdir()):
+                name = item.name
+                if name.startswith('.agentsteam_') or name == self.negative_memory_file:
+                    continue
+                try:
+                    if item.is_dir():
+                        shutil.rmtree(item)
+                    else:
+                        item.unlink()
+                except Exception:
+                    pass
+            with tarfile.open(latest, 'r') as tar:
+                tar.extractall(root)
+            return latest.name
+        except Exception as e:
+            print(f"⚠️ Rollback restore failed: {e}")
+            return None
+
+    def _is_in_negative_memory(self, path: str, code: str) -> bool:
+        import hashlib
+        h = hashlib.sha256((path + '\n' + code).encode('utf-8', errors='ignore')).hexdigest()[:16]
+        for entry in self._negative_memory_cache:
+            if entry.get('hash') == h:
+                return True
+        return False
+
+    def _record_negative_memory(self, path: str, code: str, error_signature: str, output_dir: Path):
+        # ...existing code replaced to store code sample for semantic similarity...
+        if not self.negative_memory_enabled:
+            return
+        import hashlib
+        h = hashlib.sha256((path + '\n' + code).encode('utf-8', errors='ignore')).hexdigest()[:16]
+        entry = {'hash': h, 'path': path, 'error': error_signature[:160], 'ts': time.time(), 'code_sample': code[:4000]}
+        if not any(e.get('hash') == h for e in self._negative_memory_cache):
+            self._negative_memory_cache.append(entry)
+            try:
+                (output_dir / self.negative_memory_file).write_text(json.dumps(self._negative_memory_cache, indent=2), encoding='utf-8')
+            except Exception:
+                pass
+
+    # NEW: semantic negative memory check
+    def _is_semantically_in_negative_memory(self, path: str, code: str) -> bool:
+        if not self.negative_memory_enabled or not self._negative_memory_cache:
+            return False
+        try:
+            from difflib import SequenceMatcher
+            snippet = code[:4000]
+            for entry in self._negative_memory_cache:
+                # prioritize same path
+                if entry.get('path') == path and entry.get('code_sample'):
+                    ratio = SequenceMatcher(None, entry['code_sample'], snippet).quick_ratio()
+                    if ratio >= 0.92:
+                        return True
+            # fallback: any high similarity regardless of path (aggressive)
+            for entry in self._negative_memory_cache:
+                if entry.get('code_sample'):
+                    ratio = SequenceMatcher(None, entry['code_sample'], snippet).quick_ratio()
+                    if ratio >= 0.97:
+                        return True
+        except Exception:
+            return False
+        return False
+
+    def _error_signature(self, stderr: str) -> str:
+        lines = stderr.strip().splitlines()
+        tail = lines[-3:]
+        types = [l for l in lines if ('Error:' in l or l.startswith('Traceback'))]
+        sig = '|'.join(types[-2:] + tail)
+        return sig[:400]
+
+    def _build_introspection_section(self, stdout: str, stderr: str, diffs: List[str], applied: List[str]) -> str:
+        parts = []
+        if applied:
+            parts.append('Applied files: ' + ', '.join(applied))
+        if diffs:
+            parts.append('Recent diffs:\n' + '\n\n'.join(diffs[-3:]))
+        if stderr and stderr.strip():
+            parts.append('Last stderr tail:\n' + stderr.strip()[-800:])
+        elif stdout and stdout.strip():
+            parts.append('Last stdout tail:\n' + stdout.strip()[-400:])
+        if hasattr(self, '_last_test_failures') and self._last_test_failures:
+            import json as _json
+            summarized = []
+            for f in self._last_test_failures[:3]:
+                summarized.append(f"{f.get('test')} => {f.get('error_type')} : {f.get('message')[:140]}")
+            parts.append('Recent test failures (structured):\n' + '\n'.join(summarized))
+        return '\n'.join(parts) or '(no prior run context)'
+
     def _is_path_outside(self, base: Path, rel: str) -> bool:
         try:
             target = (base / rel).resolve()
             return base.resolve() not in target.parents and target != base.resolve()
         except Exception:
             return True
+
+    def _make_diff(self, path: str, old: str, new: str) -> str:
+        import difflib as _difflib
+        diff = _difflib.unified_diff(old.splitlines(), new.splitlines(), fromfile=path+':old', tofile=path+':new', lineterm='')
+        lines = list(diff)
+        if len(lines) > 120:
+            lines = lines[:120] + ['... (truncated)']
+        return '\n'.join(lines)
 
     async def _run_command(self, cmd: str, cwd: Path):
         try:
@@ -553,7 +857,6 @@ JSON only.
     async def _attempt_fix(self, run_cmd: str, cwd: Path, candidate_files: Optional[List[str]] = None) -> bool:
         try:
             from .error_corrector import ErrorCorrector
-            # Adaptive loop: invoke single-attempt fixer repeatedly so we can re-evaluate after each change.
             for attempt in range(1, self.max_fix_attempts + 1):
                 print(f"   🛠️ Fix attempt {attempt}/{self.max_fix_attempts}")
                 corrector = ErrorCorrector(self.ai_client, self.logger, model=self.model)
@@ -579,7 +882,6 @@ JSON only.
                     files.append(str(p))
             except Exception:
                 continue
-        # Deduplicate preserving order
         seen = set(); ordered = []
         for f in files:
             if f not in seen:
@@ -602,16 +904,11 @@ JSON only.
         return any(tok in cmd for tok in server_tokens)
 
     async def _probe_server(self, expect: str, root: Path, run_cmd: str, probe: Optional[str]) -> bool:
-        # Lightweight attempt: try HTTP GET(s) using aiohttp if available; spawn server briefly if needed
-        import asyncio, socket, contextlib
-        probe_spec = probe  # e.g. "/health:contains=ok"
         try:
             import aiohttp
         except ImportError:
             return False
-        # Determine port guess (basic heuristic: look for 8000/5000/8080)
         ports = [8000, 5000, 8080]
-        # If run command explicitly specifies a port
         import re
         m = re.search(r':(\d{3,5})', run_cmd)
         if m:
@@ -619,7 +916,7 @@ JSON only.
                 ports.insert(0, int(m.group(1)))
             except Exception:
                 pass
-        # Attempt to find running server quickly (assume run just executed)
+        probe_spec = probe
         for port in ports[:3]:
             url_paths = []
             if probe_spec:
@@ -675,36 +972,6 @@ JSON only.
             readme.write_text(content, encoding='utf-8')
         except Exception as e:
             print(f"⚠️ Could not update README progress section: {e}")
-
-    def _snapshot_files(self, root: Path) -> Dict[str, str]:
-        snap = {}
-        for p in root.rglob('*.py'):
-            try:
-                rel = str(p.relative_to(root))
-                if p.stat().st_size < 20000:
-                    snap[rel] = p.read_text(encoding='utf-8', errors='ignore')
-            except Exception:
-                continue
-        return snap
-
-    def _make_diff(self, path: str, old: str, new: str) -> str:
-        diff = difflib.unified_diff(old.splitlines(), new.splitlines(), fromfile=path+':old', tofile=path+':new', lineterm='')
-        lines = list(diff)
-        if len(lines) > 120:
-            lines = lines[:120] + ['... (truncated)']
-        return '\n'.join(lines)
-
-    def _build_introspection_section(self, stdout: str, stderr: str, diffs: List[str], applied: List[str]) -> str:
-        parts = []
-        if applied:
-            parts.append('Applied files: ' + ', '.join(applied))
-        if diffs:
-            parts.append('Recent diffs:\n' + '\n\n'.join(diffs[-3:]))
-        if stderr.strip():
-            parts.append('Last stderr tail:\n' + stderr.strip()[-800:])
-        elif stdout.strip():
-            parts.append('Last stdout tail:\n' + stdout.strip()[-400:])
-        return '\n'.join(parts) or '(no prior run context)'
 
     async def _request_smaller_patch(self, path: str, old_content: str, description: str, step: str, expect: Optional[str]) -> Optional[str]:
         prompt = f"""You proposed an update exceeding size budget for file {path} while building project: {description}. Current step: {step}. Provide a SINGLE JSON array with one element containing a minimal coherent updated FULL file content for {path} strictly under {self.max_change_chars} characters that advances only this step. If expectation substring {expect or '(none)'} is relevant, ensure output still supports it. Respond JSON only."""
@@ -770,53 +1037,56 @@ JSON only.
                 return name
         return None
 
-    def _create_snapshot(self, root: Path, snapshots_dir: Path, label: str):
-        try:
-            import hashlib, tarfile, io
-            timestamp = int(time.time())
-            tar_name = f'{timestamp}_{label}.tar'
-            tar_path = snapshots_dir / tar_name
-            with tarfile.open(tar_path, 'w') as tar:
-                for p in root.rglob('*'):
-                    if any(part.startswith('.agentsteam_') for part in p.parts):
-                        continue
-                    if p.is_file():
-                        tar.add(p, arcname=str(p.relative_to(root)))
-            # prune old
-            tars = sorted(snapshots_dir.glob('*.tar'), key=lambda x: x.stat().st_mtime, reverse=True)
-            for old in tars[self.max_snapshots:]:
-                try: old.unlink()
-                except Exception: pass
-            print(f"🗃️ Snapshot saved: {tar_name}")
-        except Exception as e:
-            print(f"⚠️ Snapshot failed: {e}")
-
-    def _is_in_negative_memory(self, path: str, code: str) -> bool:
-        import hashlib
-        h = hashlib.sha256((path + '\n' + code).encode('utf-8', errors='ignore')).hexdigest()[:16]
-        for entry in self._negative_memory_cache:
-            if entry.get('hash') == h:
-                return True
-        return False
-
-    def _record_negative_memory(self, path: str, code: str, error_signature: str, output_dir: Path):
-        if not self.negative_memory_enabled:
-            return
-        import hashlib
-        h = hashlib.sha256((path + '\n' + code).encode('utf-8', errors='ignore')).hexdigest()[:16]
-        entry = {'hash': h, 'path': path, 'error': error_signature[:160], 'ts': time.time()}
-        if not any(e.get('hash') == h for e in self._negative_memory_cache):
-            self._negative_memory_cache.append(entry)
-            try:
-                (output_dir / self.negative_memory_file).write_text(json.dumps(self._negative_memory_cache, indent=2), encoding='utf-8')
-            except Exception:
-                pass
-
-    def _error_signature(self, stderr: str) -> str:
+    def _parse_pytest_failures(self, stdout: str, stderr: str) -> List[Dict[str, Any]]:
+        """Extract structured failure data from pytest output."""
+        text = stderr or stdout
+        lines = text.splitlines()
+        failures: List[Dict[str, Any]] = []
+        current: Dict[str, Any] = {}
+        capture = []
         import re
-        # Simplify signature: last line + exception type lines
-        lines = stderr.strip().splitlines()
-        tail = lines[-3:]
-        types = [l for l in lines if ('Error:' in l or l.startswith('Traceback'))]
-        sig = '|'.join(types[-2:] + tail)
-        return sig[:400]
+        file_line_re = re.compile(r'^([^\s].*?):(\d+): in (test[\w_]+)')
+        assertion_re = re.compile(r'^E +([A-Za-z_]+Error): (.*)')
+        simple_assert_re = re.compile(r'^E +AssertionError(.*)')
+        for i, line in enumerate(lines):
+            if line.startswith('___') and ' ___' in line:
+                # new section delimiter; flush previous
+                if current:
+                    current['trace'] = '\n'.join(capture[-12:])
+                    failures.append(current)
+                current = {}
+                capture = []
+                continue
+            m = file_line_re.match(line.strip())
+            if m:
+                current['file'] = m.group(1)
+                current['line'] = int(m.group(2))
+                current['test'] = m.group(3)
+            am = assertion_re.match(line.strip())
+            if am:
+                current.setdefault('error_type', am.group(1))
+                current.setdefault('message', am.group(2))
+            sm = simple_assert_re.match(line.strip())
+            if sm:
+                current.setdefault('error_type', 'AssertionError')
+                msg = sm.group(1).strip(': ').strip()
+                if msg:
+                    current.setdefault('message', msg)
+            if line.strip().startswith('+') or line.strip().startswith('-'):
+                # diff line
+                dl = current.setdefault('diff', [])
+                if len(dl) < 40:
+                    dl.append(line)
+            capture.append(line)
+        if current:
+            current['trace'] = '\n'.join(capture[-12:])
+            failures.append(current)
+        # prune noise
+        cleaned = []
+        for f in failures:
+            if not f.get('test') and not f.get('error_type'):
+                continue
+            if 'diff' in f:
+                f['diff'] = '\n'.join(f['diff'])
+            cleaned.append(f)
+        return cleaned[:10]

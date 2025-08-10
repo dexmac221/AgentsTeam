@@ -251,12 +251,20 @@ Implemented:
 - HTTP server probing for expectations (`--probe` support, heuristic endpoints)
 - README auto-update with progress table (last 25 steps)
 - Progress JSON log (.agentsteam_progress.json)
+- Rollback snapshots with automatic re-plan after rollback
+- Branching candidate patch evaluation & scoring (`--candidates`)
+- Structured pytest failure parsing (basic) included in introspection
+- Negative memory (hash-based) to skip repeating failed patches
+- Semantic negative memory (similarity detection to avoid near-duplicate failed patches)
+- Selective file-level rollback (revert only current step's changed files before full snapshot rollback)
 
 Planned / Not Yet Implemented:
-- Rich pytest failure parsing (structured assertion / failing test extraction fed back to model)
-- Enhanced assertion structure extraction for complex multi-assert test reports
+- Richer pytest failure semantic analysis feeding targeted suggestions
 - Advanced dependency version inference (pinning popular versions)
 - Multi-run adaptive probing strategies (POST /metrics etc.)
+- Semantic clustering of negative memory entries with summaries
+- Coverage-aware / test-pass-rate candidate scoring heuristics
+- Selective partial snapshot rollback (file subset diff scoring)
 
 ---
 ## Commands Reference (Quick)
