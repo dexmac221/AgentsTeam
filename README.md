@@ -230,6 +230,32 @@ AgentsTeam uses modular components:
 - Clients: Ollama (local) and OpenAI (cloud)
 - Utils: config and logging
 
+### Try/Error Incremental Builder Status
+Implemented:
+- LLM step planning (small incremental steps)
+- Minimal scaffold bootstrap (main.py + README)
+- Per-step JSON file change generation & application (changed/new files only)
+- Diff tracking & introspection (recent diffs, stdout/stderr, applied files fed back to model)
+- Dynamic run command inference (re-evaluates each step; switches to pytest only when test files exist)
+- Expected substring gating on non-pytest runs (`--expect`)
+- Adaptive multi-attempt fix loop (up to 3 single-attempt internal fixer cycles)
+- ImportError heuristic stub injection for simple missing greeting function
+- Path safety (prevent writes outside target project)
+- State persistence (.agentsteam_state.json)
+
+Planned / Not Yet Implemented:
+- Resume from persisted state (continue after interruption)
+- Rich pytest failure parsing (structured assertion / failing test extraction fed back to model)
+- More targeted multi-file fix reasoning (parsing stack traces to pick precise files)
+- Smarter pytest switch (require both test and target module existence; delay premature failing tests)
+- Assertion-aware expectation handling (map expected substring to test content)
+- Stagnation recovery strategy (reflect & re-plan micro-step when no progress N times)
+- Large diff guard / size budgeting
+- Dependency installation / virtualenv management steps execution (currently only planned text)
+- README auto-update of generated project with progress log
+- Configurable max fix attempts via CLI flag
+
+---
 ## Commands Reference (Quick)
 - agentsteam shell
 - agentsteam models
@@ -240,11 +266,13 @@ AgentsTeam uses modular components:
 - agentsteam generate "desc" [--tech ...] [--model ...] [-o dir]
 - agentsteam fix --run-command "..." [--max-attempts N]
 - agentsteam fix --file path/to/file
+- agentsteam try-error "desc" [--tech ...] [--model ...] [--max-steps N] [--plan-only]
 
 ## Best Practices
 - Always work inside projects/ to isolate generated code
 - Be specific with prompts for better results
 - If a generation looks incomplete, retry; then refine the prompt
+- For complex goals, use `try-error` to climb from a minimal scaffold using incremental validation
 
 ## Disclaimer
 AI-generated code may contain bugs or vulnerabilities. Review and test before production use. Ensure license compatibility of dependencies.
