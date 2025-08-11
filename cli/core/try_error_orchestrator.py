@@ -124,9 +124,14 @@ Return ONLY epic names, one per line, 3-8 words each, no numbering."""
         # Apply runtime feature toggles
         self.rollback_enabled = rollback
         self.negative_memory_enabled = negative_memory
-
+        run_cmd_provided = run_cmd is not None  # track if user explicitly provided run command
+        wants_basic = any('basic' in t.lower() for t in technologies) or 'commodore 64 basic' in description.lower() or 'c64 tetris' in description.lower()
         start_time = time.time()
         output_dir.mkdir(parents=True, exist_ok=True)
+        # Ensure BASIC scaffold early if requested and absent regardless of directory emptiness
+        if wants_basic and not (output_dir / 'tetris.bas').exists():
+            self._write_minimal_scaffold(output_dir, description, technologies)
+            print('🧱 Created BASIC scaffold: tetris.bas')
         self.state_file = output_dir / '.agentsteam_state.json'
         progress_path = output_dir / self.progress_file_name
         previous_state = None
@@ -165,10 +170,10 @@ Return ONLY epic names, one per line, 3-8 words each, no numbering."""
                 return {"success": True, "steps": steps, "time": 0.0, "resumed": True}
             print(f"🔂 Resuming at step {start_step_idx}/{len(steps)}")
 
-        # Minimal scaffold only if not resuming and directory empty
-        if not previous_state and not any(output_dir.iterdir()):
-            self._write_minimal_scaffold(output_dir, description, technologies)  # pass technologies
-            print("🧱 Created minimal scaffold: " + ("tetris.bas" if any("basic" in t.lower() for t in technologies) or "commodore 64 basic" in description.lower() else "main.py"))
+        # Minimal scaffold only if not resuming and directory empty (Python path); skip if BASIC already handled
+        if not previous_state and not any(output_dir.iterdir()) and not wants_basic:
+            self._write_minimal_scaffold(output_dir, description, technologies)
+            print("🧱 Created minimal scaffold: " + ("tetris.bas" if wants_basic else "main.py"))
 
         if not run_cmd:
             # Use previous run_cmd if available
@@ -213,9 +218,9 @@ Return ONLY epic names, one per line, 3-8 words each, no numbering."""
 
         rollback_attempted = False  # track single automatic replan after rollback
         idx = 1
+        basic_mode = self._is_basic_project(description, technologies)
         while idx <= len(steps):
             step = steps[idx-1]
-            # Initialize per-step original versions map for selective rollback
             pre_step_versions = {}
             if idx < start_step_idx:
                 idx += 1
@@ -226,8 +231,8 @@ Return ONLY epic names, one per line, 3-8 words each, no numbering."""
                 idx += 1
                 continue
 
-            # Dynamic re-infer run command if tests appear
-            if dynamic_run:
+            # Dynamic re-infer run command if tests appear (only if not user-provided)
+            if dynamic_run and not run_cmd_provided:
                 inferred = self._infer_run_command(output_dir)
                 if inferred != run_cmd:
                     print(f"🔄 Re-inferred run command: {run_cmd} -> {inferred}")
@@ -282,6 +287,17 @@ Return ONLY epic names, one per line, 3-8 words each, no numbering."""
             except Exception as e:
                 self.logger.warning(f"Change generation failed ({e}); skipping to run.")
                 file_changes = []
+
+            # After obtaining file_changes (may be empty), inject BASIC forcing logic
+            if basic_mode and (not file_changes or all(fc.get('path') != 'tetris.bas' for fc in file_changes)):
+                basic_path = output_dir / 'tetris.bas'
+                if basic_path.exists():
+                    content = basic_path.read_text(encoding='utf-8', errors='ignore')
+                    if self._is_basic_scaffold(content):
+                        print('🛠️ Forcing BASIC generation (scaffold still incomplete)...')
+                        forced = await self._force_basic_generation(description, step, technologies, output_dir, expect, introspection)
+                        if forced:
+                            file_changes = forced
 
             if not file_changes:
                 print("⚠️ No changes proposed.")
@@ -550,11 +566,14 @@ Return ONLY epic names, one per line, 3-8 words each, no numbering."""
         expectation = f"Expected stdout should contain substring: '{expect}'." if expect else ''
         extra_guidance = ''
         lower_desc = description.lower()
+        basic_extra = ''
         if 'commodore 64 basic' in lower_desc or any('basic' in t.lower() for t in technologies):
+            # include snippet of current BASIC file if exists
+            basic_path = Path(context_summary.split('\n')[0].split(' | ')[0])  # naive; actual snippet handled below
             extra_guidance = (
                 "\nProject MUST be a single Commodore 64 BASIC V2 source file named tetris.bas. "
                 "Return JSON updating ONLY tetris.bas. Provide FULL line-numbered BASIC code (no Python). "
-                "Keep each incremental change minimal: if file not present or still scaffold, create initial basic board + render."
+                "If tetris.bas still contains REM scaffold lines, REPLACE entire file with initial functional slice (board + draw + spawn)."
             )
         return f"""
 You are improving an existing project incrementally.{extra_guidance}
@@ -574,7 +593,7 @@ Rules:
 - Omit unchanged files.
 - Keep changes minimal and coherent with diffs & errors.
 - If single-file BASIC project: always output only tetris.bas full content.
-- If previous run succeeded and this step is about tests, create minimal failing test first.
+- If tetris.bas shows scaffold placeholders, output a more complete functional version.
 - No explanations, no surrounding markdown, no code fences.
 JSON only.
 """.strip()
