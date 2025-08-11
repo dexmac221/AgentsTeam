@@ -1136,3 +1136,33 @@ JSON only.
                 f['diff'] = '\n'.join(f['diff'])
             cleaned.append(f)
         return cleaned[:10]
+
+    def _is_basic_project(self, description: str, technologies: List[str]) -> bool:
+        ld = description.lower()
+        return any('basic' in t.lower() for t in technologies) or 'commodore 64 basic' in ld or 'c64' in ld or 'commodore 64' in ld
+
+    def _is_basic_scaffold(self, content: str) -> bool:
+        markers = ['TETRIS SCAFFOLD', 'INITIAL SCAFFOLD', 'INCREMENTAL BUILD PLACEHOLDER']
+        return any(m in content.upper() for m in markers) or len(content.strip().splitlines()) < 15
+
+    async def _force_basic_generation(self, description: str, step: str, technologies: List[str], output_dir: Path, expect: Optional[str], introspection: str) -> List[Dict[str,str]]:
+        basic_path = output_dir / 'tetris.bas'
+        existing = basic_path.read_text(encoding='utf-8', errors='ignore') if basic_path.exists() else ''
+        guidance = (
+            "You MUST output JSON with a single element updating tetris.bas. Provide FULL Commodore 64 BASIC V2 code. "
+            "Implement at least: board array (20x10), screen render routine, DATA for tetromino shapes, piece spawn at center top, movement (A/D/S), gravity loop. "
+            "If rotation/line clear not yet in scope, leave GOSUB placeholders with REM comments."
+        )
+        prompt = f"""Force BASIC generation.
+Goal: {description}
+Step: {step}
+Existing (truncated):\n{existing[:1000]}
+
+{guidance}
+Return ONLY JSON: [{{"path":"tetris.bas","code":"FULL BASIC CONTENT"}}]
+""".strip()
+        try:
+            raw = await self.ai_client.generate(self.model, prompt)
+            return self._parse_file_changes(raw)
+        except Exception:
+            return []
