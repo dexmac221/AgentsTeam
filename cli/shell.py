@@ -91,6 +91,7 @@ class AgentsTeamShell:
             'config': self.cmd_config,
             'create': self.cmd_create_file,
             'edit': self.cmd_edit_file,
+            'improve': self.cmd_improve,
             'run': self.cmd_run_command,
             'cd': self.cmd_change_dir,
             'ls': self.cmd_list_files,
@@ -983,6 +984,7 @@ Built-in Commands:
 File Operations:
   create <file>  - Create a file (AI-assisted)
   edit <file>    - Edit a file (AI-assisted)
+    improve <file> <description> - Improve a file in place (streams and backup)
   run <command>  - Run shell command
 
 🆕 Direct Shell Commands:
@@ -1012,6 +1014,7 @@ Examples:
   "create a python calculator"
   "make a tetris game with pygame"
   "edit main.py to add error handling"
+    "improve main.py add --rows/--cols flags"
   "run the tests"
   \\make clean    (direct shell command)
         """)
@@ -1069,6 +1072,18 @@ Examples:
         
         changes = input("📋 What changes do you want to make?: ")
         await self.chat_with_ai(f"Edit the file '{filename}' to {changes}")
+
+    async def cmd_improve(self, args):
+        """Improve a file in place using the AI improver"""
+        if not args or len(args) < 2:
+            print("Usage: improve <file> <description>")
+            print("Example: improve main.py 'Add --rows/--cols flags and ANSI colors'")
+            return
+
+        file = args[0]
+        desc = ' '.join(args[1:])
+        # Reuse the /improve handler
+        await self.slash_improve_code([file, desc])
     
     async def cmd_run_command(self, args):
         """Run shell command"""
