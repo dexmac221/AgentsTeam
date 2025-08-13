@@ -1790,8 +1790,7 @@ Please:
         except Exception as e:
             print(f"❌ Error debugging: {e}")
     
-    async def slash_fix_code(self, args):
-        """Fix code issues automatically"""
+    async def slash_improve_code(self, args):
         """/improve <file> <description> - Improve a code file with streamed output"""
         if not args or len(args) < 2:
             print("Usage: /improve <file> <description>")
@@ -1870,33 +1869,36 @@ Please:
             print(f"✅ Updated {file_name} (backup: {backup_path.name})")
         except Exception as e:
             print(f"❌ Failed to write improvements: {e}")
+
+    async def slash_fix_code(self, args):
+        """/fix <filename> [issue_description] - Automatically fix code issues"""
         if not args:
             print("Usage: /fix <filename> [issue_description]")
             print("Examples:")
             print("  /fix main.py")
             print("  /fix api.py 'Fix the authentication bug'")
             return
-        
+
         filename = args[0]
         issue_description = ' '.join(args[1:]) if len(args) > 1 else ""
-        
+
         try:
             file_path = self.current_dir / filename
             if not file_path.exists():
                 print(f"❌ File not found: {filename}")
                 return
-            
+
             with open(file_path, 'r', encoding='utf-8') as f:
                 original_content = f.read()
-            
+
             print(f"🔧 Fixing {filename}...")
             print("📋 Creating backup...")
-            
+
             # Create backup
             backup_path = file_path.with_suffix(f"{file_path.suffix}.backup")
             with open(backup_path, 'w', encoding='utf-8') as f:
                 f.write(original_content)
-            
+
             fix_prompt = f"""Fix the issues in this code:
 
 File: {filename}
@@ -1915,24 +1917,24 @@ Please provide the complete corrected code. Focus on:
 5. Following best practices
 
 Return only the corrected code without explanations."""
-            
+
             # Use powerful model for fixing
             model_info = await self.selector.select_model('complex')
             client = self.openai_client if model_info['provider'] == 'openai' else self.ollama_client
-            
+
             response = await client.generate(
                 model=model_info['model'],
                 prompt=fix_prompt,
                 system_prompt="You are a code fixing expert. Return only corrected code."
             )
-            
+
             # Extract code from response
             fixed_code = self._extract_code_from_response(response)
-            
+
             if fixed_code and len(fixed_code) > 50:  # Basic validation
                 with open(file_path, 'w', encoding='utf-8') as f:
                     f.write(fixed_code)
-                
+
                 print(f"✅ Fixed {filename}")
                 print(f"📁 Backup saved as {backup_path.name}")
                 print("🔍 Use /read to review changes")
@@ -1940,7 +1942,7 @@ Return only the corrected code without explanations."""
                 print("⚠️ AI response didn't contain valid code. No changes made.")
                 print("🤖 Response:")
                 print(response)
-                
+
         except Exception as e:
             print(f"❌ Error fixing code: {e}")
     
