@@ -16,7 +16,7 @@ import json
 import re
 import aiohttp
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Callable, Optional
 from ..utils.logger import Logger
 from ..clients.ollama_client import OllamaClient
 from ..clients.openai_client import OpenAIClient
@@ -64,7 +64,9 @@ class CodeGenerator:
         self.openai_client = OpenAIClient(config, logger)
     
     async def generate_project(self, description: str, technologies: List[str], 
-                             model_info: Dict[str, str], output_dir: Path) -> Dict[str, Any]:
+                             model_info: Dict[str, str], output_dir: Path,
+                             *, stream: bool = True,
+                             on_chunk: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
         """
         Generate a complete project based on description and technologies.
         
@@ -117,7 +119,8 @@ class CodeGenerator:
             
             # Generate project structure and files
             result = await self._generate_with_client(
-                client, description, technologies, model_info, output_dir
+                client, description, technologies, model_info, output_dir,
+                stream=stream, on_chunk=on_chunk
             )
             
             generation_time = time.time() - start_time
@@ -140,13 +143,20 @@ class CodeGenerator:
             }
     
     async def _generate_with_client(self, client, description: str, technologies: List[str], 
-                                  model_info: Dict[str, str], output_dir: Path) -> Dict[str, Any]:
-        """Generate code using specified client"""
+                                  model_info: Dict[str, str], output_dir: Path,
+                                  *, stream: bool = True,
+                                  on_chunk: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
+        """Generate code using specified client with optional streaming and progress callback"""
         
         # Build prompt based on complexity
         prompt = self._build_project_prompt(description, technologies)
         
         # Generate project plan first (disable code-only behavior for Ollama)
+        if on_chunk:
+            try:
+                on_chunk("\n# Planning project structure...\n")
+            except Exception:
+                pass
         if isinstance(client, OllamaClient):
             plan_response = await client.generate(
                 model=model_info['model'],
@@ -158,7 +168,9 @@ class CodeGenerator:
             plan_response = await client.generate(
                 model=model_info['model'],
                 prompt=f"{prompt}\n\nFirst, create a JSON project plan with file structure and descriptions.",
-                system_prompt="You are an expert software architect. Respond with well-structured JSON only."
+                system_prompt="You are an expert software architect. Respond with well-structured JSON only.",
+                code_only=False,
+                temperature=0.2,
             )
         
         # Parse project plan and validate
@@ -184,27 +196,75 @@ class CodeGenerator:
             file_prompt = self._build_file_prompt(
                 file_info, description, technologies, plan
             )
+
+            # Announce file generation
+            if on_chunk:
+                try:
+                    on_chunk(f"\n# filename: {file_info['path']}\n")
+                except Exception:
+                    pass
             
-            # For file content, request code-only behavior on Ollama
+            # For file content, request code-only behavior for all providers
+            system_prompt = "You are an expert programmer. Generate clean, production-ready code with comments."
             if isinstance(client, OllamaClient):
-                content_response = await client.generate(
-                    model=model_info['model'],
-                    prompt=file_prompt,
-                    system_prompt="You are an expert programmer. Generate clean, production-ready code with comments.",
-                    code_only=True
-                )
+                if stream and hasattr(client, 'generate_stream'):
+                    chunks = []
+                    async for ch in client.generate_stream(
+                        model=model_info['model'],
+                        prompt=file_prompt,
+                        system_prompt=system_prompt,
+                        code_only=True,
+                    ):
+                        if on_chunk:
+                            try:
+                                on_chunk(ch)
+                            except Exception:
+                                pass
+                        chunks.append(ch)
+                    content_response = ''.join(chunks)
+                else:
+                    content_response = await client.generate(
+                        model=model_info['model'],
+                        prompt=file_prompt,
+                        system_prompt=system_prompt,
+                        code_only=True
+                    )
             else:
-                content_response = await client.generate(
-                    model=model_info['model'],
-                    prompt=file_prompt,
-                    system_prompt="You are an expert programmer. Generate clean, production-ready code with comments."
-                )
+                # OpenAI path
+                if stream and hasattr(client, 'generate_stream'):
+                    chunks = []
+                    async for ch in client.generate_stream(
+                        model=model_info['model'],
+                        prompt=file_prompt,
+                        system_prompt=system_prompt,
+                        code_only=True,
+                        temperature=0.2,
+                    ):
+                        if on_chunk:
+                            try:
+                                on_chunk(ch)
+                            except Exception:
+                                pass
+                        chunks.append(ch)
+                    content_response = ''.join(chunks)
+                else:
+                    content_response = await client.generate(
+                        model=model_info['model'],
+                        prompt=file_prompt,
+                        system_prompt=system_prompt,
+                        code_only=True,
+                        temperature=0.2,
+                    )
             
             # Extract and save code; ensure non-empty content
             inferred_language = self._get_language_from_extension(Path(file_info['path']).suffix)
             file_content = (self._extract_code_from_response(content_response, inferred_language.lower()) or "").strip()
             if not file_content:
                 file_content = self._default_content_for(file_info['path'], description, inferred_language)
+
+            # Enforce no external dependencies when requested
+            if file_path.name.lower() == 'requirements.txt' and 'no external dependencies' in description.lower():
+                file_content = ""
             
             with open(file_path, 'w', encoding='utf-8') as f:
                 f.write(file_content)
@@ -232,7 +292,9 @@ class CodeGenerator:
             instructions_response = await client.generate(
                 model=model_info['model'],
                 prompt=instructions_prompt,
-                system_prompt="Provide clear, actionable setup instructions as a simple list."
+                system_prompt="Provide clear, actionable setup instructions as a simple list.",
+                code_only=False,
+                temperature=0.2,
             )
         
         instructions = self._parse_instructions(instructions_response)
@@ -561,6 +623,12 @@ class CodeGenerator:
             # Remove numbering and bullets
             line = re.sub(r'^\d+\.\s*', '', line)
             line = re.sub(r'^[-*]\s*', '', line)
+            # Remove markdown headings and bold markers
+            line = re.sub(r'^#{1,6}\s*', '', line)
+            line = line.replace('**', '').replace('__', '')
+            # Skip section titles that are likely headings
+            if line.lower().startswith(('setup and run', 'next steps', 'instructions', 'usage', 'example')):
+                continue
             
             if line and len(line) > 10:  # Filter out very short lines
                 instructions.append(line)

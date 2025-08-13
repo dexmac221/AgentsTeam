@@ -9,7 +9,7 @@ while providing robust error handling and connection management.
 
 import aiohttp
 import json
-from typing import Dict, Optional
+from typing import Dict, Optional, AsyncGenerator
 from ..utils.logger import Logger
 
 class OllamaClient:
@@ -110,6 +110,79 @@ CRITICAL INSTRUCTIONS:
         except Exception as e:
             self.logger.error(f"Ollama generation error: {e}")
             raise Exception(f"Failed to generate with Ollama: {e}")
+
+    async def generate_stream(
+        self,
+        model: str,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        *,
+        code_only: bool = False,
+    ) -> AsyncGenerator[str, None]:
+        """Stream text chunks using Ollama's chat API with stream mode."""
+        messages = []
+        base_system_prompt = system_prompt or self._get_default_system_prompt()
+        if code_only:
+            enhanced_system_prompt = f"""{base_system_prompt}
+
+CRITICAL INSTRUCTIONS:
+- Generate ONLY executable code, no explanations or markdown
+- Do NOT use ```code``` blocks or markdown formatting
+- Do NOT include tables, descriptions, or explanatory text
+- Start directly with code (imports, function definitions, etc.)
+- Include comments INSIDE the code using proper comment syntax
+- Make code complete and production-ready
+- If generating multiple files, clearly separate them with file headers"""
+            messages.append({"role": "system", "content": enhanced_system_prompt})
+        else:
+            messages.append({"role": "system", "content": base_system_prompt})
+
+        messages.append({"role": "user", "content": prompt})
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": True,
+            "options": {
+                "temperature": 0.1,
+                "top_p": 0.9,
+                "top_k": 40,
+                "repeat_penalty": 1.1,
+                "num_predict": 4096
+            }
+        }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.base_url}/api/chat",
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=600)
+                ) as resp:
+                    if resp.status != 200:
+                        error_text = await resp.text()
+                        raise Exception(f"Ollama API error {resp.status}: {error_text}")
+
+                    async for raw_line in resp.content:
+                        try:
+                            line = raw_line.decode('utf-8').strip()
+                            if not line:
+                                continue
+                            obj = json.loads(line)
+                        except Exception:
+                            continue
+
+                        # Stream message content if present
+                        msg = obj.get('message') or {}
+                        content = msg.get('content')
+                        if content:
+                            yield content
+
+                        if obj.get('done'):
+                            break
+        except Exception as e:
+            self.logger.error(f"Ollama streaming error: {e}")
+            raise Exception(f"Failed to stream with Ollama: {e}")
     
     def _get_default_system_prompt(self) -> str:
         """Get default system prompt for general generation"""

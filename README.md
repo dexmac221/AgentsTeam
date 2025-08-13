@@ -6,7 +6,10 @@ AI-powered CLI for generating complete, working projects and auto-fixing errors.
 - gpt-oss priority: selects gpt-oss:20b when available
 - Cloud fallback: OpenAI (gpt-4o, gpt-4o-mini) when needed
 - Clean generation: prompts tuned for “code only” output
+- Live streaming: see model output as it’s generated (default on)
+- Code-only enforcement: file content remains code without markdown noise
 - Intelligent fixer: detects errors and applies safe, AI-generated fixes with backups
+- In-place improvements: improve existing files with streaming and backups
 - Model scanning: supports multiple Ollama hosts (LAN GPUs, localhost)
 
 ## Table of Contents
@@ -18,6 +21,7 @@ AI-powered CLI for generating complete, working projects and auto-fixing errors.
 - Usage
   - Interactive Shell
   - Direct Generation
+  - Improving Existing Code
   - Model Management
   - Error Correction
 - Intelligent Model Selection
@@ -110,7 +114,7 @@ mkdir -p projects/my-app && cd projects/my-app
 agentsteam shell
 
 # Or generate directly
-agentsteam generate "Simple CLI that prints current date/time" --tech python
+agentsteam generate "Simple CLI that prints current date/time" --tech python --stream --verbose
 
 # List models (per-host inventories)
 agentsteam models
@@ -143,6 +147,23 @@ agentsteam generate "Tetris game" --tech python,pygame
 # Force a specific model
 agentsteam generate "..." --model ollama:gpt-oss:20b
 agentsteam generate "..." --model openai:gpt-4o
+
+# Streaming options
+agentsteam generate "..." --no-stream   # disable live streaming
+agentsteam generate "..." --stream -v   # stream with verbose on-chunk printing
+```
+
+### Improving Existing Code
+```bash
+# Improve a file in place (creates .backup)
+agentsteam improve path/to/file.py -d "Add CLI flags --rows/--cols/--gens; keep no external deps" --stream --show-diff
+
+# Force a specific model
+agentsteam improve path/to/file.py -d "Refactor for readability" --model openai:gpt-4o
+```
+The shell also supports improvements interactively:
+```
+/improve main.py "Add ANSI colors and a --pattern option; no external deps"
 ```
 
 ### Model Management
@@ -201,6 +222,43 @@ Example projects included:
 - projects/gui-calculator
 - projects/example-fastapi (generated via gpt-oss:20b local model)
 
+### Conway's Game of Life (no external dependencies)
+This walkthrough shows how to create a tiny, single-file template and iterate on it.
+
+1) Generate the initial template (streamed)
+```bash
+agentsteam generate "Single-file Python Conway's Game of Life that prints an ASCII board to the terminal; no external dependencies" \
+  --tech python \
+  -o projects/game-of-life \
+  --stream --verbose
+```
+
+2) Run it
+```bash
+python projects/game-of-life/main.py
+```
+
+3a) Improve via CLI (adds flags, ANSI colors, patterns)
+```bash
+agentsteam improve projects/game-of-life/main.py \
+  -d "Add argparse with --rows, --cols, --gens, and --pattern (glider, blinker, random with optional --seed); render alive cells in green; keep no external deps" \
+  --stream --show-diff
+
+# Try the new flags
+python projects/game-of-life/main.py --rows 15 --cols 30 --gens 20 --pattern blinker
+```
+
+3b) Or improve from the interactive shell
+```
+cd projects/game-of-life
+agentsteam shell
+/improve main.py "Add ANSI green cells and --rows/--cols/--gens/--pattern; no external deps"
+```
+
+Notes:
+- File content generation is enforced to be code-only to avoid markdown artifacts.
+- If your description says “no external dependencies”, AgentsTeam will keep requirements.txt empty.
+
 ### Generated FastAPI Example (local gpt-oss:20b)
 Command used:
 ```bash
@@ -225,7 +283,7 @@ You can run them from their directories; see each subfolder’s README or main f
 ## Architecture
 AgentsTeam uses modular components:
 - ModelSelector: picks local/cloud model and scans Ollama hosts
-- CodeGenerator: prompts provider for plan/files and writes code; with Ollama, "code-only" output is applied only when generating file contents. Plans and setup instructions remain plain text to avoid corruption.
+- CodeGenerator: prompts provider for plan/files and writes code; file content uses strict code-only prompts and streaming. Plans and setup instructions stay as plain text.
 - ErrorCorrector: detects and fixes errors with AI, using backups
 - Clients: Ollama (local) and OpenAI (cloud)
 - Utils: config and logging
@@ -278,6 +336,7 @@ Planned / Not Yet Implemented:
 - agentsteam fix --run-command "..." [--max-attempts N]
 - agentsteam fix --file path/to/file
 - agentsteam try-error "desc" [--tech ...] [--model ...] [--max-steps N] [--plan-only]
+- agentsteam improve path/to/file.py -d "changes" [--model ...] [--stream|--no-stream] [--show-diff]
 
 ## Best Practices
 - Always work inside projects/ to isolate generated code

@@ -121,6 +121,7 @@ class AgentsTeamShell:
             '/analyze': self.slash_analyze_code,
             '/debug': self.slash_debug_code,
             '/fix': self.slash_fix_code,
+            '/improve': self.slash_improve_code,
             '/refactor': self.slash_refactor_code,
             '/explain': self.slash_explain_code,
             '/find': self.slash_find_in_files,
@@ -1791,6 +1792,84 @@ Please:
     
     async def slash_fix_code(self, args):
         """Fix code issues automatically"""
+        """/improve <file> <description> - Improve a code file with streamed output"""
+        if not args or len(args) < 2:
+            print("Usage: /improve <file> <description>")
+            return
+
+        file_name = args[0]
+        description = ' '.join(args[1:])
+
+        file_path = self.current_dir / file_name
+        if not file_path.exists() or not file_path.is_file():
+            print(f"❌ File not found: {file_name}")
+            return
+
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                current_code = f.read()
+        except Exception as e:
+            print(f"❌ Unable to read {file_name}: {e}")
+            return
+
+        print(f"🛠️ Improving {file_name}...")
+        print(f"📋 Request: {description}")
+
+        # Prepare prompt
+        prompt = (
+            "Improve the following code based on these requirements.\n\n"
+            f"Requirements:\n{description}\n\n"
+            "Return ONLY the complete improved code.\n"
+            "- No markdown/backticks\n- No explanations\n- Keep existing functionality intact while adding changes\n\n"
+            "Current code (Python):\n\n"
+            f"{current_code}\n"
+        )
+
+        # Select model
+        if self.force_provider:
+            model_info = await self._get_forced_model()
+        else:
+            model_info = await self.selector.select_model('complex')
+        client = self.openai_client if model_info['provider'] == 'openai' else self.ollama_client
+
+        # Stream improvements
+        print("\n━━━ Generating Improvements ━━━")
+        improved = ""
+        try:
+            if hasattr(client, 'generate_stream'):
+                async for chunk in client.generate_stream(
+                    model=model_info['model'],
+                    prompt=prompt,
+                    system_prompt="You are a code generator. Output only improved code.",
+                    code_only=True,
+                ):
+                    print(chunk, end="")
+                    improved += chunk
+            else:
+                improved = await client.generate(
+                    model=model_info['model'],
+                    prompt=prompt,
+                    system_prompt="You are a code generator. Output only improved code.",
+                    code_only=True,
+                )
+        except Exception as e:
+            print(f"\n❌ Error generating improvements: {e}")
+            return
+        print("\n━━━ End ━━━\n")
+
+        improved = improved.strip()
+        if not improved or len(improved) < 10:
+            print("❌ The model did not return valid code.")
+            return
+
+        # Backup and write
+        try:
+            backup_path = file_path.with_suffix(file_path.suffix + ".backup")
+            backup_path.write_text(current_code, encoding='utf-8')
+            file_path.write_text(improved, encoding='utf-8')
+            print(f"✅ Updated {file_name} (backup: {backup_path.name})")
+        except Exception as e:
+            print(f"❌ Failed to write improvements: {e}")
         if not args:
             print("Usage: /fix <filename> [issue_description]")
             print("Examples:")

@@ -47,6 +47,10 @@ Examples:
     gen_parser.add_argument('--model', help='Force specific model (ollama:gemma2, openai:gpt-4)')
     gen_parser.add_argument('--output', '-o', help='Output directory', default='./generated')
     gen_parser.add_argument('--complexity', choices=['simple', 'medium', 'complex'], help='Force complexity level')
+    gen_parser.add_argument('--stream', dest='stream', action='store_true', help='Stream model output live')
+    gen_parser.add_argument('--no-stream', dest='stream', action='store_false', help='Disable streaming output')
+    gen_parser.set_defaults(stream=True)
+    gen_parser.add_argument('--verbose', '-v', action='store_true', help='Verbose progress output')
     
     # Try-error incremental build command
     try_parser = subparsers.add_parser('try-error', help='Incremental try/error guided project build')
@@ -92,6 +96,17 @@ Examples:
     fix_parser.add_argument('--error', '-e', help='Specific error message to address')
     fix_parser.add_argument('--max-attempts', type=int, default=3, help='Maximum fix attempts')
     fix_parser.add_argument('--debug', action='store_true', help='Enable debug mode')
+
+    # Improve command (streamed code enhancement)
+    imp_parser = subparsers.add_parser('improve', help='Improve an existing code file with AI')
+    imp_parser.add_argument('file', help='Path to the code file to improve')
+    imp_parser.add_argument('--description', '-d', required=True, help='Describe the improvements/changes')
+    imp_parser.add_argument('--model', help='Force specific model (ollama:..., openai:...)')
+    imp_parser.add_argument('--output', '-o', help='Output file (default: overwrite original)')
+    imp_parser.add_argument('--stream', dest='stream', action='store_true', help='Stream improvements live')
+    imp_parser.add_argument('--no-stream', dest='stream', action='store_false', help='Disable streaming output')
+    imp_parser.set_defaults(stream=True)
+    imp_parser.add_argument('--show-diff', dest='show_diff', action='store_true', help='Show unified diff of changes')
     
     args = parser.parse_args()
     
@@ -116,6 +131,8 @@ Examples:
         asyncio.run(handle_try_error(args, config, logger))
     elif args.command == 'fix':
         asyncio.run(handle_fix(args, config, logger))
+    elif args.command == 'improve':
+        asyncio.run(handle_improve(args, config, logger))
 
 def handle_config(args, config):
     """Handle configuration commands"""
@@ -196,12 +213,25 @@ async def handle_generate(args, config, logger):
     
     # Generate code
     try:
+        # Wrap streaming callback if verbose
+        def printer(chunk: str):
+            try:
+                # Print without adding extra newline
+                print(chunk, end='', flush=True)
+            except Exception:
+                pass
+
+        # Monkey-patch generate_project call path to pass streaming
+        # by directly calling the internal method to avoid changing public API
         result = await generator.generate_project(
             description=args.description,
             technologies=args.tech.split(',') if args.tech else [],
             model_info=model_info,
-            output_dir=Path(args.output)
+            output_dir=Path(args.output),
+            stream=args.stream,
+            on_chunk=(printer if args.verbose or args.stream else None)
         )
+        # Note: generator.generate_project internally uses streaming when available
         
         if result['success']:
             print(f"\n✅ Code generated successfully!")
@@ -403,6 +433,112 @@ async def handle_fix(args, config, logger):
     except Exception as e:
         logger.error(f"Fix command error: {e}")
         print(f"❌ Error: {e}")
+
+async def handle_improve(args, config, logger):
+    """Improve an existing file based on a description, with optional streaming and diff."""
+    from .core.model_selector import ModelSelector
+    from .clients.ollama_client import OllamaClient
+    from .clients.openai_client import OpenAIClient
+    from .core.code_generator import CodeGenerator
+
+    file_path = Path(args.file)
+    if not file_path.exists():
+        print(f"❌ File not found: {file_path}")
+        return
+
+    current_code = file_path.read_text(encoding='utf-8')
+
+    # Choose model
+    selector = ModelSelector(config, logger)
+    if args.model:
+        model_info = selector.parse_model_string(args.model)
+        print(f"🎯 Using forced model: {model_info['provider']}:{model_info['model']}")
+    else:
+        model_info = await selector.select_model('complex')
+        print(f"🤖 Selected model: {model_info['provider']}:{model_info['model']}")
+
+    # Init client
+    client = OpenAIClient(config, logger) if model_info['provider'] == 'openai' else OllamaClient(config, logger, base_url=model_info.get('base_url'))
+
+    # Build strict code-only prompt
+    prompt = f"""Improve the following code based on these requirements.
+
+Requirements:
+{args.description}
+
+Return ONLY the complete improved code.
+- No markdown/backticks
+- No explanations
+- Keep existing functionality intact while adding changes
+
+Current code (Python):
+
+{current_code}
+"""
+
+    print("\n🛠️ Improving code...\n")
+
+    # Stream or not
+    response_text = ""
+    try:
+        if args.stream and hasattr(client, 'generate_stream'):
+            async for chunk in client.generate_stream(
+                model=model_info['model'],
+                prompt=prompt,
+                system_prompt="You are a code generator. Output only improved code.",
+                code_only=True,
+            ):
+                print(chunk, end="", flush=True)
+                response_text += chunk
+            print()  # newline after stream
+        else:
+            response_text = await client.generate(
+                model=model_info['model'],
+                prompt=prompt,
+                system_prompt="You are a code generator. Output only improved code.",
+                code_only=True,
+                temperature=0.2,
+            )
+    except Exception as e:
+        logger.error(f"Improve generation error: {e}")
+        print(f"❌ Error generating improvements: {e}")
+        return
+
+    # Clean/extract code
+    gen = CodeGenerator(config, logger)
+    improved_code = gen._extract_code_from_response(response_text, 'python') or response_text
+    improved_code = improved_code.strip()
+
+    if not improved_code or len(improved_code) < 10:
+        print("❌ The model did not return valid code.")
+        return
+
+    # Optional diff
+    if getattr(args, 'show_diff', False):
+        import difflib
+        diff = difflib.unified_diff(
+            current_code.splitlines(),
+            improved_code.splitlines(),
+            fromfile=str(file_path) + " (original)",
+            tofile=(str(args.output) if args.output else str(file_path)) + " (improved)",
+            lineterm=""
+        )
+        print("\n🔍 Diff:")
+        print("\n".join(diff))
+
+    # Backup and write
+    backup_path = file_path.with_suffix(file_path.suffix + ".backup")
+    try:
+        file_path.write_text(current_code, encoding='utf-8')  # ensure readable; then overwrite with backup write
+        backup_path.write_text(current_code, encoding='utf-8')
+    except Exception:
+        pass
+
+    out_path = Path(args.output) if args.output else file_path
+    out_path.write_text(improved_code, encoding='utf-8')
+    print(f"\n✅ Saved improved code to: {out_path}")
+    if out_path == file_path:
+        print(f"📋 Backup saved as: {backup_path.name}")
 
 if __name__ == "__main__":
     main()
